@@ -101,6 +101,8 @@ io.on('connection', (socket) => {
   /* ------------------------------------------------------------ 로비 */
 
   socket.on('updateSettings', withRoom((room, playerId, payload) => room.updateSettings(playerId, payload)));
+  socket.on('addBot', withRoom((room, playerId) => room.addBot(playerId)));
+  socket.on('removeBot', withRoom((room, playerId) => room.removeBot(playerId)));
   socket.on('startGame', withRoom((room, playerId) => room.start(playerId)));
 
   /* ------------------------------------------------------------ 게임 행동 */

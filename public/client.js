@@ -109,6 +109,17 @@ function me() {
   return S.game.players.find((p) => p.id === S.you) || null;
 }
 
+/** 게임 상태에는 봇 여부가 없으므로 방 참가자 목록에서 찾는다 */
+function isBotId(id) {
+  const rp = (S && S.roomPlayers) ? S.roomPlayers.find((p) => p.id === id) : null;
+  return !!(rp && rp.isBot);
+}
+
+/** 목록에 보여줄 이름 (봇 표시 + 내 회사 표시) */
+function labelOf(p) {
+  return (isBotId(p.id) ? '🤖 ' : '') + p.name + (p.id === S.you ? ' (나)' : '');
+}
+
 function render() {
   if (!S) return;
   const phase = S.phase;
@@ -135,7 +146,11 @@ function renderLobby() {
   list.innerHTML = '';
   for (const p of S.roomPlayers) {
     const li = el('li', p.connected ? '' : 'off');
-    li.textContent = p.name + (p.id === S.hostId ? ' 👑' : '') + (p.voice ? ' 🎙️' : '');
+    li.textContent =
+      (p.isBot ? '🤖 ' : '') +
+      p.name +
+      (p.id === S.hostId ? ' 👑' : '') +
+      (p.voice ? ' 🎙️' : '');
     if (p.id === S.you) li.classList.add('me');
     list.appendChild(li);
   }
@@ -161,13 +176,19 @@ function renderLobby() {
     wrap.appendChild(row);
   }
 
+  const botCount = S.roomPlayers.filter((p) => p.isBot).length;
   $('#lobby-start').classList.toggle('hidden', !isHost);
+  $('#lobby-bot-actions').classList.toggle('hidden', !isHost);
+  $('#lobby-add-bot').disabled = S.roomPlayers.length >= S.maxPlayers;
+  $('#lobby-remove-bot').disabled = botCount === 0;
   $('#lobby-hint').textContent = isHost
-    ? `${S.minPlayers}~${S.maxPlayers}명이 모이면 시작할 수 있습니다.`
+    ? `${S.minPlayers}~${S.maxPlayers}명이 모이면 시작할 수 있습니다. 혼자라면 컴퓨터를 추가하세요.`
     : '방장이 시작하기를 기다리는 중...';
 }
 
 $('#lobby-start').addEventListener('click', () => emit('startGame'));
+$('#lobby-add-bot').addEventListener('click', () => emit('addBot'));
+$('#lobby-remove-bot').addEventListener('click', () => emit('removeBot'));
 $('#lobby-leave').addEventListener('click', () => {
   emit('leaveRoom');
   joined = false;
@@ -574,7 +595,7 @@ function renderStocks() {
     const dot = el('span', 'dot');
     dot.style.background = p.color;
     head.appendChild(dot);
-    head.appendChild(el('b', '', p.name + (p.id === S.you ? ' (나)' : '')));
+    head.appendChild(el('b', '', labelOf(p)));
     head.appendChild(el('span', '', ` ${fmt(s.price)}/주`));
     head.appendChild(el('span', 'small', ` 유통 ${s.float}주`));
     row.appendChild(head);
@@ -627,7 +648,7 @@ function renderCompany() {
     const dot = el('span', 'dot');
     dot.style.background = p.color;
     head.appendChild(dot);
-    head.appendChild(el('b', '', p.name + (p.id === S.you ? ' (나)' : '')));
+    head.appendChild(el('b', '', labelOf(p)));
     if (p.ready) head.appendChild(el('span', 'small ready-mark', ' ✅준비'));
     card.appendChild(head);
     card.appendChild(el('div', 'small', `현금 ${fmt(p.cash)} · 순자산 ${fmt(p.netWorth)}`));

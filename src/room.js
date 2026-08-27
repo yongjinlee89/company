@@ -1,9 +1,12 @@
 'use strict';
 
 const { Game } = require('./game');
+const { playRound: botPlayRound } = require('./bot');
 
 const MIN_PLAYERS = 2;
 const MAX_PLAYERS = 6;
+
+const BOT_NAMES = ['알파', '베타', '감마', '델타', '엡실론'];
 
 const DEFAULT_SETTINGS = {
   startCash: 1000, // 시작 자금
@@ -39,6 +42,8 @@ class Room {
     this.updatedAt = Date.now();
     this.roundEndsAt = null;
     this._roundTimer = null;
+    /** 봇 행동 예약 타이머 (라운드가 바뀌거나 방이 정리될 때 모두 취소한다) */
+    this._botTimers = [];
   }
 
   touch() {
@@ -49,8 +54,15 @@ class Room {
     return this.players.find((p) => p.id === id) || null;
   }
 
+  /** 봇만 남은 방은 빈 방으로 본다 (그렇지 않으면 영원히 정리되지 않는다) */
   isEmpty() {
-    return !this.players.some((p) => p.connected);
+    return !this.players.some((p) => p.connected && !p.isBot);
+  }
+
+  /** 방장은 사람 중에서 고른다 */
+  reassignHost() {
+    const next = this.players.find((p) => !p.isBot) || null;
+    this.hostId = next ? next.id : null;
   }
 
   /* ---------------------------------------------------------------- 입장/퇴장 */
@@ -88,9 +100,7 @@ class Room {
     if (this.phase === 'lobby') {
       this.players = this.players.filter((x) => x.id !== playerId);
       this.pushLog(`${p.name} 님이 나갔습니다.`);
-      if (this.hostId === playerId) {
-        this.hostId = this.players[0] ? this.players[0].id : null;
-      }
+      if (this.hostId === playerId) this.reassignHost();
     } else {
       // 게임 중에는 자리를 유지한다 (재접속 가능)
       p.connected = false;
@@ -101,6 +111,7 @@ class Room {
   }
 
   disconnect(socketId) {
+    if (!socketId) return; // 봇은 socketId 가 null 이므로 실수로 매칭되지 않게 막는다
     const p = this.players.find((x) => x.socketId === socketId);
     if (!p) return;
     this.touch();
@@ -110,13 +121,92 @@ class Room {
     p.muted = false;
     if (this.phase === 'lobby') {
       this.players = this.players.filter((x) => x.id !== p.id);
-      if (this.hostId === p.id) {
-        this.hostId = this.players[0] ? this.players[0].id : null;
-      }
+      if (this.hostId === p.id) this.reassignHost();
       this.pushLog(`${p.name} 님이 나갔습니다.`);
     } else {
       this.pushLog(`${p.name} 님의 연결이 끊겼습니다.`);
     }
+  }
+
+  /* ---------------------------------------------------------------- 컴퓨터 플레이어 */
+
+  addBot(playerId) {
+    if (this.phase !== 'lobby') return { ok: false, error: '게임 중에는 추가할 수 없습니다.' };
+    if (playerId !== this.hostId) return { ok: false, error: '방장만 컴퓨터를 추가할 수 있습니다.' };
+    if (this.players.length >= MAX_PLAYERS) {
+      return { ok: false, error: `최대 ${MAX_PLAYERS}명까지 참가할 수 있습니다.` };
+    }
+    const used = new Set(this.players.map((p) => p.name));
+    const label = BOT_NAMES.map((n) => '컴퓨터 ' + n).find((n) => !used.has(n));
+    if (!label) return { ok: false, error: '더 추가할 수 없습니다.' };
+
+    this.players.push({
+      id: 'bot_' + Math.random().toString(36).slice(2, 10),
+      name: label,
+      socketId: null,
+      connected: true,
+      isBot: true,
+      voice: false,
+      muted: false,
+    });
+    this.pushLog(`${label} 님이 참가했습니다.`);
+    this.touch();
+    return { ok: true };
+  }
+
+  removeBot(playerId) {
+    if (this.phase !== 'lobby') return { ok: false, error: '게임 중에는 뺄 수 없습니다.' };
+    if (playerId !== this.hostId) return { ok: false, error: '방장만 컴퓨터를 뺄 수 있습니다.' };
+    for (let i = this.players.length - 1; i >= 0; i--) {
+      if (this.players[i].isBot) {
+        const [removed] = this.players.splice(i, 1);
+        this.pushLog(`${removed.name} 님이 나갔습니다.`);
+        this.touch();
+        return { ok: true };
+      }
+    }
+    return { ok: false, error: '뺄 컴퓨터가 없습니다.' };
+  }
+
+  /**
+   * 이번 라운드의 봇 행동을 예약한다.
+   * 사람이 보기에 자연스럽도록 조금씩 시차를 두고 움직인 뒤 준비를 누른다.
+   */
+  scheduleBots() {
+    this.clearBotTimers();
+    if (this.phase !== 'playing' || !this.game || this.game.ended) return;
+    const round = this.game.round;
+    const stale = () => this.phase !== 'playing' || !this.game || this.game.round !== round;
+
+    this.players
+      .filter((p) => p.isBot)
+      .forEach((bot, i) => {
+        const delay = 1200 + i * 700 + Math.floor(Math.random() * 900);
+        this._botTimers.push(
+          setTimeout(() => {
+            if (stale()) return;
+            try {
+              botPlayRound(this.game, bot.id);
+            } catch (err) {
+              console.error('[bot] 행동 중 오류', err);
+            }
+            this.touch();
+            this.onChange(this);
+            this._botTimers.push(
+              setTimeout(() => {
+                if (stale()) return;
+                // setReady 안에서 전원 준비 시 정산 + 브로드캐스트까지 처리된다
+                if (this.setReady(bot.id, true).ok) this.onChange(this);
+              }, 600 + Math.floor(Math.random() * 700))
+            );
+          }, delay)
+        );
+      });
+  }
+
+  clearBotTimers() {
+    for (const t of this._botTimers) clearTimeout(t);
+    this._botTimers = [];
   }
 
   /* ---------------------------------------------------------------- 설정/시작 */
@@ -149,6 +239,7 @@ class Room {
     );
     this.game.pushLog(`게임 시작! 시작 자금 ${this.settings.startCash}, 총 ${this.settings.rounds}라운드`);
     this.startRoundTimer();
+    this.scheduleBots();
     this.touch();
     return { ok: true };
   }
@@ -179,10 +270,12 @@ class Room {
       clearTimeout(this._roundTimer);
       this._roundTimer = null;
     }
+    this.clearBotTimers();
   }
 
   finishRound() {
     if (this.phase !== 'playing' || !this.game) return;
+    this.clearBotTimers();
     this.game.resolveRound();
     if (this.game.ended) {
       this.phase = 'ended';
@@ -190,6 +283,7 @@ class Room {
       this.clearAutoTimer();
     } else {
       this.startRoundTimer();
+      this.scheduleBots();
     }
     this.touch();
     this.onChange(this);
@@ -250,6 +344,7 @@ class Room {
         id: p.id,
         name: p.name,
         connected: p.connected,
+        isBot: !!p.isBot,
         voice: p.voice,
         muted: p.muted,
       })),
