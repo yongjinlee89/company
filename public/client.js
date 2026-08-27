@@ -335,13 +335,22 @@ function drawMap() {
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, y + 0.5, ts - 1, ts - 1);
 
-    // 소유자 테두리
+    // 소유 표시 — 내부를 주인 색으로 덮고 테두리를 두른다.
+    // 내 땅은 더 진하고 테두리도 굵게 해서 한눈에 들어오게 한다.
     if (tile.owner) {
       const owner = g.players.find((p) => p.id === tile.owner);
       if (owner) {
+        const isMine = tile.owner === ME;
+        ctx.save();
+        ctx.globalAlpha = isMine ? 0.5 : 0.28;
+        ctx.fillStyle = owner.color;
+        ctx.fillRect(x, y, ts, ts);
+        ctx.restore();
+
         ctx.strokeStyle = owner.color;
-        ctx.lineWidth = Math.max(2, ts * 0.09);
-        ctx.strokeRect(x + 2, y + 2, ts - 4, ts - 4);
+        ctx.lineWidth = isMine ? Math.max(3, ts * 0.14) : Math.max(2, ts * 0.08);
+        const inset = ctx.lineWidth / 2;
+        ctx.strokeRect(x + inset, y + inset, ts - inset * 2, ts - inset * 2);
       }
     }
 

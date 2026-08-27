@@ -127,10 +127,10 @@ function randInt(n) {
 function resourceCounts(playerCount) {
   const extra = Math.max(0, playerCount - 2);
   return {
-    iron: 12 + 3 * extra, // 철광 지대
-    oil: 8 + 2 * extra, // 유전 지대
-    farm: 14 + 3 * extra, // 농지
-    mountain: 10, // 산 (지을 수 없는 장애물)
+    iron: 16 + 4 * extra, // 철광 지대
+    oil: 11 + 3 * extra, // 유전 지대
+    farm: 18 + 4 * extra, // 농지
+    mountain: 8, // 산 (지을 수 없는 장애물)
   };
 }
 
