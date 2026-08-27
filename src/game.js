@@ -21,6 +21,13 @@ const TAKEOVER_SHARES = 51; // 이만큼 모으면 경영권 인수
 const DIVIDEND_YIELD = 0.002;
 const TAKEOVER_CUT = 0.25; // 경영권 보유자가 가져가는 매출 비율
 
+const LOAN_INTEREST = 0.0008; // 대출 이자 (초당 0.08% — 10분이면 약 48%)
+const LOAN_MIN_LIMIT = 600; // 자산이 없어도 이만큼은 빌릴 수 있다
+const LOAN_RATIO = 0.5; // 총자산 대비 최대 대출 비율
+const MAX_SHORT = 40; // 회사당 공매도 가능 주식 수
+const SHORT_MARGIN = 0.5; // 공매도할 때 필요한 증거금 (거래대금 대비)
+const RESALE_RATE = 0.7; // 건물을 은행에 되팔 때 돌려받는 비율
+
 const MATERIALS = {
   iron: { name: '철광석', base: 10 },
   oil: { name: '원유', base: 14 },
@@ -57,6 +64,20 @@ const BUILDINGS = {
 };
 
 const CITY_NAMES = ['서울', '부산', '광주', '대전'];
+
+/**
+ * 무작위 사건. 원자재 시세와 도시 수요를 흔들어서
+ * 한 번 짜 놓은 공급망이 계속 최적이지 않도록 만든다.
+ */
+const EVENT_KINDS = [
+  { kind: 'mat-up', weight: 3 },
+  { kind: 'mat-down', weight: 3 },
+  { kind: 'city-boom', weight: 2 },
+  { kind: 'city-slump', weight: 2 },
+];
+const EVENT_FIRST = 35; // 첫 사건까지 (초)
+const EVENT_GAP = [40, 75]; // 사건 사이 간격
+const EVENT_LEN = [25, 45]; // 사건 지속 시간
 
 const PLAYER_COLORS = ['#e5484d', '#3b82f6', '#22a06b', '#f59e0b', '#8b5cf6', '#0ea5b7'];
 
@@ -144,6 +165,8 @@ function generateMap(playerCount = 2) {
       },
       // 수요 배수. 팔면 내려가고 시간이 지나면 회복된다
       demand: { machine: 1, food: 1 },
+      // 사건으로 붙는 일시적 가격 배수 (평소 1)
+      boost: 1,
     });
   });
 
@@ -191,10 +214,11 @@ class Game {
     this.map = { w: map.w, h: map.h, tiles: map.tiles };
     this.cities = map.cities;
 
-    // 자재 시장: 사면 오르고 팔면 내리고, 시간이 지나면 기준가로 회귀
+    // 자재 시장: 사면 오르고 팔면 내리고, 시간이 지나면 기준가로 회귀.
+    // base 는 사건에 따라 흔들리는 "현재 기준가", baseline 은 원래 값.
     this.market = {};
     for (const [key, m] of Object.entries(MATERIALS)) {
-      this.market[key] = { price: m.base, base: m.base };
+      this.market[key] = { price: m.base, base: m.base, baseline: m.base };
     }
 
     this.players = playerInfos.map((info, i) => ({
@@ -205,19 +229,26 @@ class Game {
       inv: { iron: 0, oil: 0, grain: 0, machine: 0, food: 0 },
       // shares[대상 회사 id] = 보유 주식 수
       shares: { [info.id]: FOUNDER_SHARES },
+      debt: 0,
+      // shorts[대상 회사 id] = { shares, proceeds } — 공매도 미결제 잔고
+      shorts: {},
       incomePerSec: 0,
       _incomeAccum: 0, // 1초 단위로 집계해 incomePerSec 로 옮긴다
     }));
 
-    // 주식 시장: 회사(플레이어)마다 주가와 유통 물량
+    // 주식 시장: 회사(플레이어)마다 주가, 유통 물량, 외부 투자자 보유분
     this.stocks = {};
     for (const p of this.players) {
       this.stocks[p.id] = {
         price: Math.max(1, settings.startCash / TOTAL_SHARES),
-        float: TOTAL_SHARES - FOUNDER_SHARES,
+        float: TOTAL_SHARES - FOUNDER_SHARES, // 시장에 그냥 남아 있는 물량
+        npc: 0, // 외부 투자자가 들고 있는 물량 (사람도 이걸 사 올 수 있다)
+        mood: 1, // 시장 심리
       };
     }
 
+    this.event = null;
+    this._nextEventAt = EVENT_FIRST;
     this._incomeTimer = 0;
     this._controllers = {};
     this.log = [];
@@ -287,6 +318,199 @@ class Game {
     return { ok: true };
   }
 
+  /** 땅과 그 위 건물의 평가액 (순자산 계산과 은행 매각가에 함께 쓴다) */
+  tileValue(idx) {
+    const tile = this.tile(idx);
+    if (!tile) return 0;
+    let v = TILE_TYPES[tile.t].price || 0;
+    if (tile.b) v += BUILDINGS[tile.b].cost * RESALE_RATE;
+    for (let lv = 1; lv < (tile.level || 1); lv++) {
+      v += BUILDINGS.factory.upgradeCost * lv * RESALE_RATE;
+    }
+    return Math.round(v);
+  }
+
+  /** 땅·건물을 은행에 판다. 언제든 팔 수 있지만 건물값은 일부만 돌려받는다. */
+  sellTile(pid, idx) {
+    if (this.ended) return { ok: false, error: '게임이 끝났습니다.' };
+    const p = this.player(pid);
+    const tile = this.tile(idx);
+    if (!p || !tile) return { ok: false, error: '잘못된 요청입니다.' };
+    if (tile.owner !== pid) return { ok: false, error: '내 땅이 아닙니다.' };
+    const value = this.tileValue(idx);
+    p.cash += value;
+    const what = tile.b ? BUILDINGS[tile.b].name : TILE_TYPES[tile.t].name;
+    tile.owner = null;
+    tile.b = null;
+    tile.mode = null;
+    tile.route = null;
+    tile.level = undefined;
+    tile.idle = false;
+    tile.listPrice = null;
+    this.pushLog(`${p.name} 님이 ${what}을(를) ${value}에 매각했습니다.`);
+    return { ok: true, value };
+  }
+
+  /** 내 땅을 부동산 매물로 내놓는다. 다른 회사가 그 값에 사 갈 수 있다. */
+  listTile(pid, idx, price) {
+    if (this.ended) return { ok: false, error: '게임이 끝났습니다.' };
+    const p = this.player(pid);
+    const tile = this.tile(idx);
+    price = Math.floor(Number(price) || 0);
+    if (!p || !tile) return { ok: false, error: '잘못된 요청입니다.' };
+    if (tile.owner !== pid) return { ok: false, error: '내 땅이 아닙니다.' };
+    if (price < 1 || price > 999999) return { ok: false, error: '가격이 잘못되었습니다.' };
+    tile.listPrice = price;
+    this.pushLog(`${p.name} 님이 ${TILE_TYPES[tile.t].name}을(를) ${price}에 내놓았습니다.`);
+    return { ok: true };
+  }
+
+  unlistTile(pid, idx) {
+    const p = this.player(pid);
+    const tile = this.tile(idx);
+    if (!p || !tile) return { ok: false, error: '잘못된 요청입니다.' };
+    if (tile.owner !== pid) return { ok: false, error: '내 땅이 아닙니다.' };
+    tile.listPrice = null;
+    return { ok: true };
+  }
+
+  /** 남이 내놓은 매물을 산다. 건물이 있으면 건물째로 넘어온다. */
+  buyListedTile(pid, idx) {
+    if (this.ended) return { ok: false, error: '게임이 끝났습니다.' };
+    const p = this.player(pid);
+    const tile = this.tile(idx);
+    if (!p || !tile) return { ok: false, error: '잘못된 요청입니다.' };
+    if (!tile.listPrice) return { ok: false, error: '매물이 아닙니다.' };
+    if (tile.owner === pid) return { ok: false, error: '내 땅입니다.' };
+    const seller = this.player(tile.owner);
+    if (!seller) return { ok: false, error: '판매자를 찾을 수 없습니다.' };
+    const price = tile.listPrice;
+    if (p.cash < price) return { ok: false, error: `현금이 부족합니다. (필요 ${price})` };
+    p.cash -= price;
+    seller.cash += price;
+    tile.owner = pid;
+    tile.listPrice = null;
+    tile.route = null; // 노선은 새 주인이 다시 정한다
+    const what = tile.b ? BUILDINGS[tile.b].name : TILE_TYPES[tile.t].name;
+    this.pushLog(`🏠 ${p.name} 님이 ${seller.name} 님의 ${what}을(를) ${price}에 사들였습니다.`);
+    return { ok: true };
+  }
+
+  /* ---------------------------------------------------------------- 대출 */
+
+  /** 총자산 대비 한도 — 지금 더 빌릴 수 있는 금액 */
+  creditLimit(p) {
+    const gross = this.netWorth(p) + p.debt; // 부채를 되돌린 총자산
+    const cap = Math.max(LOAN_MIN_LIMIT, gross * LOAN_RATIO);
+    return Math.max(0, Math.round(cap - p.debt));
+  }
+
+  borrow(pid, amount) {
+    if (this.ended) return { ok: false, error: '게임이 끝났습니다.' };
+    const p = this.player(pid);
+    amount = Math.floor(Number(amount) || 0);
+    if (!p) return { ok: false, error: '잘못된 요청입니다.' };
+    if (amount < 1) return { ok: false, error: '금액을 입력해 주세요.' };
+    const limit = this.creditLimit(p);
+    if (amount > limit) return { ok: false, error: `한도를 넘었습니다. (가능 ${limit})` };
+    p.cash += amount;
+    p.debt += amount;
+    this.pushLog(`${p.name} 님이 ${amount}을(를) 대출했습니다.`);
+    return { ok: true };
+  }
+
+  repay(pid, amount) {
+    const p = this.player(pid);
+    amount = Math.floor(Number(amount) || 0);
+    if (!p) return { ok: false, error: '잘못된 요청입니다.' };
+    if (p.debt <= 0) return { ok: false, error: '갚을 빚이 없습니다.' };
+    if (amount < 1) return { ok: false, error: '금액을 입력해 주세요.' };
+    const pay = Math.min(amount, Math.floor(p.debt), Math.floor(p.cash));
+    if (pay < 1) return { ok: false, error: '현금이 부족합니다.' };
+    p.cash -= pay;
+    p.debt -= pay;
+    if (p.debt < 0.5) p.debt = 0;
+    this.pushLog(`${p.name} 님이 대출 ${pay}을(를) 상환했습니다.`);
+    return { ok: true, paid: pay };
+  }
+
+  /* ---------------------------------------------------------------- 공매도 */
+
+  shortShares(p, companyId) {
+    const s = p.shorts[companyId];
+    return s ? s.shares : 0;
+  }
+
+  /** 빌린 주식을 미리 판다. 주가가 내려가면 싸게 되사서 차익을 남긴다. */
+  shortSell(pid, company, qty) {
+    if (this.ended) return { ok: false, error: '게임이 끝났습니다.' };
+    const p = this.player(pid);
+    const target = this.player(company);
+    const s = this.stocks[company];
+    qty = Math.floor(Number(qty) || 0);
+    if (!p || !target || !s) return { ok: false, error: '잘못된 요청입니다.' };
+    if (company === pid) return { ok: false, error: '자기 회사는 공매도할 수 없습니다.' };
+    if (qty < 1) return { ok: false, error: '수량을 입력해 주세요.' };
+    const held = this.shortShares(p, company);
+    if (held + qty > MAX_SHORT) {
+      return { ok: false, error: `회사당 ${MAX_SHORT}주까지만 공매도할 수 있습니다. (현재 ${held}주)` };
+    }
+
+    let price = s.price;
+    let proceeds = 0;
+    for (let i = 0; i < qty; i++) {
+      price = Math.max(1, price * 0.99);
+      proceeds += price * 0.995;
+    }
+    proceeds = Math.round(proceeds);
+    // 증거금 — 되살 돈이 아예 없으면 못 건다
+    if (p.cash < proceeds * SHORT_MARGIN) {
+      return { ok: false, error: `증거금이 부족합니다. (현금 ${Math.round(proceeds * SHORT_MARGIN)} 필요)` };
+    }
+    p.cash += proceeds;
+    if (!p.shorts[company]) p.shorts[company] = { shares: 0, proceeds: 0 };
+    p.shorts[company].shares += qty;
+    p.shorts[company].proceeds += proceeds;
+    s.price = Math.round(price * 100) / 100;
+    this.pushLog(`📉 ${p.name} 님이 ${target.name} 주식 ${qty}주를 공매도했습니다 (+${proceeds})`);
+    return { ok: true, proceeds };
+  }
+
+  /** 공매도 환매 — 빌린 주식을 되사서 갚는다 */
+  coverShort(pid, company, qty) {
+    const p = this.player(pid);
+    const target = this.player(company);
+    const s = this.stocks[company];
+    qty = Math.floor(Number(qty) || 0);
+    if (!p || !target || !s) return { ok: false, error: '잘못된 요청입니다.' };
+    const pos = p.shorts[company];
+    if (!pos || pos.shares < 1) return { ok: false, error: '공매도 잔고가 없습니다.' };
+    if (qty < 1) return { ok: false, error: '수량을 입력해 주세요.' };
+    qty = Math.min(qty, pos.shares);
+
+    let price = s.price;
+    let cost = 0;
+    for (let i = 0; i < qty; i++) {
+      cost += price * 1.005;
+      price = price * 1.01;
+    }
+    cost = Math.round(cost);
+    if (p.cash < cost) return { ok: false, error: `현금이 부족합니다. (필요 ${cost})` };
+
+    // 평균 매도가와 비교해 손익을 기록해 둔다
+    const avgIn = pos.proceeds / pos.shares;
+    const profit = Math.round(avgIn * qty - cost);
+    p.cash -= cost;
+    pos.proceeds -= avgIn * qty;
+    pos.shares -= qty;
+    if (pos.shares < 1) delete p.shorts[company];
+    s.price = Math.round(price * 100) / 100;
+    this.pushLog(
+      `📈 ${p.name} 님이 ${target.name} 공매도 ${qty}주를 환매했습니다 (${profit >= 0 ? '+' : ''}${profit})`
+    );
+    return { ok: true, cost, profit };
+  }
+
   /** 공장 증설 — 생산량이 레벨에 비례해 늘고, 물동량이 커져 운송 단가가 싸진다 */
   upgradeFactory(pid, idx) {
     if (this.ended) return { ok: false, error: '게임이 끝났습니다.' };
@@ -350,7 +574,7 @@ class Game {
     // 증설한 공장일수록 물동량이 커서 대량 운송 수단이 유리해진다
     const rate = spec.rate * ((tile && tile.level) || 1);
     const transport = transportQuote(dist, rate);
-    const revenue = spec.base * c.mod[useMode] * c.demand[useMode] * rate;
+    const revenue = spec.base * c.mod[useMode] * c.demand[useMode] * (c.boost || 1) * rate;
     return {
       city: cityIndex,
       dist,
@@ -432,7 +656,8 @@ class Game {
     let total = 0;
 
     if (side === 'buy') {
-      if (s.float < qty) return { ok: false, error: `시장에 나온 물량이 ${s.float}주뿐입니다.` };
+      const avail = this.availableShares(company);
+      if (avail < qty) return { ok: false, error: `살 수 있는 물량이 ${avail}주뿐입니다.` };
       for (let i = 0; i < qty; i++) {
         total += price * 1.005;
         price = price * 1.01;
@@ -440,7 +665,10 @@ class Game {
       total = Math.round(total);
       if (p.cash < total) return { ok: false, error: `현금이 부족합니다. (필요 ${total})` };
       p.cash -= total;
-      s.float -= qty;
+      // 시장에 남은 물량부터 가져오고, 모자라면 외부 투자자에게서 사 온다
+      const fromFloat = Math.min(s.float, qty);
+      s.float -= fromFloat;
+      s.npc -= qty - fromFloat;
       p.shares[company] = (p.shares[company] || 0) + qty;
       s.price = Math.round(price * 100) / 100;
       this.pushLog(`${p.name} 님이 ${target.name} 주식 ${qty}주 매수 (-${total})`);
@@ -543,6 +771,114 @@ class Game {
     }
   }
 
+  /* ---------------------------------------------------------------- 사건 */
+
+  /** 원자재 시세와 도시 수요를 흔드는 무작위 사건을 하나 일으킨다 */
+  startEvent() {
+    const total = EVENT_KINDS.reduce((s, e) => s + e.weight, 0);
+    let roll = Math.random() * total;
+    let pick = EVENT_KINDS[0];
+    for (const e of EVENT_KINDS) {
+      roll -= e.weight;
+      if (roll <= 0) {
+        pick = e;
+        break;
+      }
+    }
+    const len = EVENT_LEN[0] + Math.random() * (EVENT_LEN[1] - EVENT_LEN[0]);
+    const until = this.elapsed + len;
+
+    if (pick.kind === 'mat-up' || pick.kind === 'mat-down') {
+      const keys = Object.keys(this.market);
+      const mat = keys[randInt(keys.length)];
+      const up = pick.kind === 'mat-up';
+      const mult = up ? 1.6 + Math.random() * 0.6 : 0.45 + Math.random() * 0.25;
+      this.market[mat].base = Math.round(this.market[mat].baseline * mult * 100) / 100;
+      const name = MATERIALS[mat].name;
+      this.event = {
+        kind: pick.kind,
+        target: mat,
+        mult: Math.round(mult * 100) / 100,
+        until,
+        icon: up ? '📈' : '📉',
+        text: up
+          ? `${name} 품귀 — 시세가 ${Math.round(mult * 100)}% 수준으로 치솟습니다`
+          : `${name} 공급 과잉 — 시세가 ${Math.round(mult * 100)}% 수준으로 떨어집니다`,
+      };
+    } else {
+      const ci = randInt(this.cities.length);
+      const boom = pick.kind === 'city-boom';
+      const mult = boom ? 1.35 + Math.random() * 0.25 : 0.6 + Math.random() * 0.15;
+      this.cities[ci].boost = Math.round(mult * 100) / 100;
+      const name = this.cities[ci].name;
+      this.event = {
+        kind: pick.kind,
+        target: ci,
+        mult: Math.round(mult * 100) / 100,
+        until,
+        icon: boom ? '🎉' : '🌧️',
+        text: boom
+          ? `${name} 호황 — 제품값이 ${Math.round(mult * 100)}% 수준으로 뜁니다`
+          : `${name} 불황 — 제품값이 ${Math.round(mult * 100)}% 수준으로 주저앉습니다`,
+      };
+    }
+    this.pushLog(`${this.event.icon} ${this.event.text}`);
+  }
+
+  endEvent() {
+    if (!this.event) return;
+    const e = this.event;
+    if (e.kind === 'mat-up' || e.kind === 'mat-down') {
+      this.market[e.target].base = this.market[e.target].baseline;
+    } else {
+      this.cities[e.target].boost = 1;
+    }
+    this.pushLog(`${e.icon} 사건이 진정되었습니다.`);
+    this.event = null;
+    this._nextEventAt = this.elapsed + EVENT_GAP[0] + Math.random() * (EVENT_GAP[1] - EVENT_GAP[0]);
+  }
+
+  /* ---------------------------------------------------------------- 외부 투자자 */
+
+  /**
+   * 사람이 아무도 주식을 만지지 않아도 주가가 움직이도록 외부 투자자를 흉내낸다.
+   * 적정가보다 싸면 사들이고(유통 물량이 줄고 주가가 오른다), 늘 잔물결이 있다.
+   */
+  tradeNpc(dt) {
+    for (const p of this.players) {
+      const s = this.stocks[p.id];
+
+      // 시장 심리 — 제자리(1)로 돌아오려 하지만 계속 흔들린다.
+      // 이게 없으면 주가가 순자산을 그대로 따라가서 오르기만 한다.
+      // 회사가 커지는 속도보다 빠르게 흔들려야 실제로 하락 구간이 생긴다.
+      s.mood += (1 - s.mood) * 0.08 * dt + (Math.random() - 0.5) * 0.28 * Math.sqrt(dt);
+      s.mood = Math.min(1.7, Math.max(0.5, s.mood));
+
+      const fair = Math.max(1, this.netWorth(p) / TOTAL_SHARES);
+      const target = fair * s.mood;
+      const gap = (target - s.price) / s.price;
+
+      // 괴리가 크면 외부 투자자가 실제로 물량을 사고판다
+      const intensity = Math.min(1.2, Math.abs(gap) * 3);
+      if (Math.random() < intensity * dt) {
+        if (gap > 0 && s.float > 0) {
+          s.float -= 1;
+          s.npc += 1;
+        } else if (gap < 0 && s.npc > 0) {
+          s.npc -= 1;
+          s.float += 1;
+        }
+      }
+      s.price = Math.round(Math.max(1, s.price + (target - s.price) * 0.25 * dt) * 100) / 100;
+    }
+  }
+
+  /** 지금 살 수 있는 물량 (시장에 남은 것 + 외부 투자자가 내놓을 수 있는 것) */
+  availableShares(companyId) {
+    const s = this.stocks[companyId];
+    return s ? s.float + s.npc : 0;
+  }
+
   /** 어떤 회사가 지금 초당 물고 있는 배당 총액 (UI 표시용) */
   dividendLoad(companyId) {
     const price = this.stocks[companyId].price;
@@ -603,7 +939,8 @@ class Game {
         if (budget <= 1e-9) break;
         const qty = Math.min(owner.inv[product] || 0, budget);
         if (qty <= 1e-9) continue;
-        const unit = PRODUCTS[product].base * city.mod[product] * city.demand[product];
+        const unit =
+          PRODUCTS[product].base * city.mod[product] * city.demand[product] * (city.boost || 1);
         const transport = transportQuote(dist, rate);
         // 운송비는 "초당" 기준이므로 실제로 보낸 양의 비율만큼만 물린다
         const cost = (transport.cost * qty) / rate;
@@ -627,14 +964,27 @@ class Game {
       }
     }
 
-    // 5) 주가는 회사 순자산 기준 적정가를 따라간다
+    // 5) 대출 이자 — 현금이 모자라면 원금에 붙는다 (복리로 불어난다)
     for (const p of this.players) {
-      const s = this.stocks[p.id];
-      const fair = Math.max(1, this.netWorth(p) / TOTAL_SHARES);
-      s.price = Math.round(Math.max(1, s.price + (fair - s.price) * 0.05 * dt) * 100) / 100;
+      if (p.debt <= 0) continue;
+      const interest = p.debt * LOAN_INTEREST * dt;
+      const fromCash = Math.min(interest, Math.max(0, p.cash));
+      p.cash -= fromCash;
+      p.debt += interest - fromCash;
+      p._incomeAccum -= interest;
     }
 
-    // 6) 초당 수익 집계 (1초마다 갱신, 살짝 평활화해서 숫자가 튀지 않게)
+    // 6) 주식 — 외부 투자자가 거래하며 주가가 오르내린다
+    this.tradeNpc(dt);
+
+    // 7) 사건 — 원자재 시세와 도시 수요를 흔든다
+    if (this.event) {
+      if (this.elapsed >= this.event.until) this.endEvent();
+    } else if (this.elapsed >= this._nextEventAt) {
+      this.startEvent();
+    }
+
+    // 8) 초당 수익 집계 (1초마다 갱신, 살짝 평활화해서 숫자가 튀지 않게)
     this._incomeTimer += dt;
     if (this._incomeTimer >= 1) {
       for (const p of this.players) {
@@ -645,7 +995,7 @@ class Game {
       this._incomeTimer = 0;
     }
 
-    // 7) 종료
+    // 9) 종료
     if (this.elapsed >= this.settings.duration) {
       this.finish();
     }
@@ -672,18 +1022,16 @@ class Game {
   netWorth(p) {
     let v = p.cash;
     for (const [k, n] of Object.entries(p.inv)) v += this.itemValue(k) * n;
-    for (const tile of this.map.tiles) {
-      if (tile.owner === p.id) {
-        v += TILE_TYPES[tile.t].price || 0;
-        if (tile.b) v += BUILDINGS[tile.b].cost * 0.7;
-        // 증설에 들인 돈도 자산으로 쳐 준다
-        for (let lv = 1; lv < (tile.level || 1); lv++) {
-          v += BUILDINGS.factory.upgradeCost * lv * 0.7;
-        }
-      }
+    for (let i = 0; i < this.map.tiles.length; i++) {
+      if (this.map.tiles[i].owner === p.id) v += this.tileValue(i);
     }
     for (const [cid, n] of Object.entries(p.shares)) {
       if (this.stocks[cid]) v += this.stocks[cid].price * n;
+    }
+    // 빚은 빼고, 공매도한 주식은 언젠가 되사야 하므로 부채로 잡는다
+    v -= p.debt;
+    for (const [cid, pos] of Object.entries(p.shorts)) {
+      if (this.stocks[cid]) v -= this.stocks[cid].price * pos.shares;
     }
     return Math.round(v);
   }
@@ -703,9 +1051,14 @@ class Game {
       cities: this.cities,
       market: this.market,
       stocks: this.stocks,
+      event: this.event,
       players: this.players.map((p) => {
         const inv = {};
         for (const [k, n] of Object.entries(p.inv)) inv[k] = Game.round2(n);
+        const shorts = {};
+        for (const [cid, pos] of Object.entries(p.shorts)) {
+          shorts[cid] = { shares: pos.shares, avg: Game.round2(pos.proceeds / pos.shares) };
+        }
         return {
           id: p.id,
           name: p.name,
@@ -713,6 +1066,9 @@ class Game {
           cash: Math.round(p.cash),
           inv,
           shares: p.shares,
+          debt: Math.round(p.debt),
+          credit: this.creditLimit(p),
+          shorts,
           incomePerSec: p.incomePerSec,
           netWorth: this.netWorth(p),
           controller: (() => {
@@ -734,6 +1090,9 @@ class Game {
         takeoverShares: TAKEOVER_SHARES,
         dividendYield: DIVIDEND_YIELD,
         takeoverCut: TAKEOVER_CUT,
+        loanInterest: LOAN_INTEREST,
+        maxShort: MAX_SHORT,
+        resaleRate: RESALE_RATE,
       };
     }
     return state;
@@ -752,6 +1111,10 @@ module.exports = {
   TAKEOVER_SHARES,
   DIVIDEND_YIELD,
   TAKEOVER_CUT,
+  LOAN_INTEREST,
+  LOAN_MIN_LIMIT,
+  MAX_SHORT,
+  RESALE_RATE,
   transportQuote,
   chebyshev,
   generateMap,

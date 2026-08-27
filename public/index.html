@@ -67,6 +67,8 @@
       <div id="time-bar"><div id="time-fill"></div></div>
     </header>
 
+    <div id="event-banner" class="hidden"></div>
+
     <main id="game-main">
       <div id="map-wrap">
         <canvas id="map"></canvas>
@@ -108,7 +110,11 @@
       <div class="result-card">
         <h2>🏆 최종 순위</h2>
         <ol id="result-list"></ol>
-        <button id="result-close">닫기</button>
+        <div class="lobby-actions">
+          <button id="result-restart" class="primary">다시 하기</button>
+          <button id="result-close">닫기</button>
+        </div>
+        <p id="result-hint" class="hint"></p>
       </div>
     </div>
   </section>

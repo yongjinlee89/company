@@ -219,14 +219,15 @@ function buyInputs(game, me) {
   }
 }
 
-/** 경영권 방어를 최우선으로 하고, 여유가 있으면 저평가된 라이벌 지분을 모은다 */
+/**
+ * 주식 — 경영권 방어가 최우선이고, 그다음은 싸게 사서 비싸게 파는 것.
+ * 사람이 주식을 아예 안 만져도 컴퓨터끼리 사고팔아 주가가 움직인다.
+ */
 function playStocks(game, me) {
   const DEFEND_FROM = TAKEOVER_SHARES - 15; // 36주부터 위협으로 본다
   const myStock = game.stocks[me.id];
 
-  const threat = game.players.some(
-    (p) => p.id !== me.id && (p.shares[me.id] || 0) >= DEFEND_FROM
-  );
+  const threat = game.players.some((p) => p.id !== me.id && (p.shares[me.id] || 0) >= DEFEND_FROM);
   if (threat && myStock.float > 0 && me.cash > 200) {
     const qty = Math.min(myStock.float, Math.floor((me.cash - 150) / (myStock.price * 1.05)), 10);
     if (qty > 0) {
@@ -235,7 +236,22 @@ function playStocks(game, me) {
     }
   }
 
-  // 공격은 자금에 여유가 있을 때만 (본업이 우선)
+  // 들고 있는 남의 주식이 비싸졌으면 판다 (차익 실현 — 주가가 내려가는 힘이 된다)
+  for (const [cid, n] of Object.entries(me.shares)) {
+    if (cid === me.id || n < 1) continue;
+    const target = game.player(cid);
+    const s = game.stocks[cid];
+    if (!target || !s) continue;
+    const fair = game.netWorth(target) / TOTAL_SHARES;
+    // 경영권을 쥐고 있으면 팔지 않는다 (그 자체로 돈이 들어온다)
+    if (game.controllerOf(cid) && game.controllerOf(cid).id === me.id) continue;
+    if (s.price > fair * 1.25) {
+      game.stockTrade(me.id, { company: cid, qty: Math.min(n, 10), side: 'sell' });
+      return;
+    }
+  }
+
+  // 본업에 쓸 돈은 남겨 두고, 저평가된 회사를 사 모은다
   if (me.cash < 800) return;
   let best = null;
   for (const p of game.players) {
@@ -249,6 +265,26 @@ function playStocks(game, me) {
   if (!best) return;
   const qty = Math.min(best.s.float, Math.floor((me.cash - 500) / (best.s.price * 1.1)), 12);
   if (qty > 0) game.stockTrade(me.id, { company: best.id, qty, side: 'buy' });
+}
+
+/**
+ * 대출 — 초반에 설비를 깔 돈이 없을 때만 쓴다.
+ * 이자가 계속 나가므로 여유가 생기면 갚는다.
+ */
+function manageLoan(game, me) {
+  // 돈이 남으면 먼저 빚부터 정리
+  if (me.debt > 0 && me.cash > me.debt + 600) {
+    game.repay(me.id, Math.floor(me.debt));
+    return;
+  }
+  // 아직 공장이 없고 현금이 말랐으면 빌려서라도 시작한다
+  if (me.debt > 0 || me.cash > 250) return;
+  const hasFactory = myTiles(game, me.id).some((t) => t.tile.b === 'factory');
+  const limit = game.creditLimit(me);
+  if (limit < 200) return;
+  // 설비 하나를 더 놓을 만큼만 빌린다
+  const want = hasFactory ? 300 : 500;
+  game.borrow(me.id, Math.min(want, limit));
 }
 
 /* ------------------------------------------------------------------ 진입점 */
@@ -266,6 +302,7 @@ function think(game, botId) {
 
   let mapChanged = checkRoutes(game, me);
   sellSurplus(game, me);
+  manageLoan(game, me);
   if (buildUp(game, me)) mapChanged = true;
   buyInputs(game, me);
   playStocks(game, me);

@@ -110,6 +110,7 @@ io.on('connection', (socket) => {
   socket.on('addBot', withRoom((room, playerId) => room.addBot(playerId)));
   socket.on('removeBot', withRoom((room, playerId) => room.removeBot(playerId)));
   socket.on('startGame', withRoom((room, playerId) => room.start(playerId)));
+  socket.on('restart', withRoom((room, playerId) => room.restart(playerId)));
 
   /* ------------------------------------------------------------ 게임 행동 */
 
@@ -120,6 +121,18 @@ io.on('connection', (socket) => {
   socket.on('upgradeFactory', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.upgradeFactory(pid, p.idx))));
   socket.on('trade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.trade(pid, p))));
   socket.on('stockTrade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.stockTrade(pid, p))));
+
+  // 자산 매각 / 부동산
+  socket.on('sellTile', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.sellTile(pid, p.idx))));
+  socket.on('listTile', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.listTile(pid, p.idx, p.price))));
+  socket.on('unlistTile', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.unlistTile(pid, p.idx))));
+  socket.on('buyListedTile', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.buyListedTile(pid, p.idx))));
+
+  // 대출 / 공매도
+  socket.on('borrow', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.borrow(pid, p.amount))));
+  socket.on('repay', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.repay(pid, p.amount))));
+  socket.on('shortSell', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.shortSell(pid, p.company, p.qty))));
+  socket.on('coverShort', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.coverShort(pid, p.company, p.qty))));
 
   /* ------------------------------------------------------------ 음성 채팅 */
   // 서버는 신호(SDP/ICE)만 중계한다. 음성 자체는 브라우저끼리 P2P 로 오간다.

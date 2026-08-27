@@ -254,10 +254,25 @@ function renderGame() {
   }
 
   renderClock();
+  renderEvent();
   drawMap();
   renderTilePanel();
   renderTabs();
   renderResult();
+}
+
+/** 진행 중인 사건을 화면 위에 띄운다 */
+function renderEvent() {
+  const banner = $('#event-banner');
+  const e = S.game.event;
+  if (!e || S.game.ended) {
+    banner.classList.add('hidden');
+    return;
+  }
+  banner.classList.remove('hidden');
+  const left = Math.max(0, Math.round(e.until - S.game.elapsed));
+  banner.textContent = `${e.icon} ${e.text} (${left}초 남음)`;
+  banner.classList.toggle('bad', e.kind === 'mat-up' || e.kind === 'city-slump');
 }
 
 function renderClock() {
@@ -349,6 +364,16 @@ function drawMap() {
         ctx.fillText(String(tile.level), x + ts * 0.2, y + ts * 0.8);
         ctx.font = `${Math.floor(ts * 0.42)}px sans-serif`;
       }
+    }
+
+    // 부동산 매물은 점선 테두리로 표시
+    if (tile.listPrice) {
+      ctx.save();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = '#ffd866';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 3, y + 3, ts - 6, ts - 6);
+      ctx.restore();
     }
 
     if (selectedTile === i) {
@@ -496,7 +521,9 @@ function renderTilePanel() {
   panel.classList.remove('hidden');
 
   // 구조가 그대로면 숫자만 고친다 (다시 만들면 누르던 버튼이 사라진다)
-  const sig = [selectedTile, tile.t, tile.owner, tile.b, tile.mode, tile.level, tile.route, g.ended].join('|');
+  const sig = [
+    selectedTile, tile.t, tile.owner, tile.b, tile.mode, tile.level, tile.route, tile.listPrice, g.ended,
+  ].join('|');
   renderPane('tile', sig, (live) => buildTilePanel(panel, tile, live));
 }
 
@@ -525,6 +552,17 @@ function buildTilePanel(panel, tile, live) {
     row.appendChild(dot);
     row.appendChild(el('span', '', owner ? owner.name + ' 소유' : '소유'));
     panel.appendChild(row);
+  }
+
+  // 남이 내놓은 매물이면 살 수 있다
+  if (tile.owner && tile.owner !== ME && tile.listPrice && !g.ended) {
+    const btn = el('button', 'primary wide', `🏠 매물 구입 (${fmt(tile.listPrice)})`);
+    btn.addEventListener('click', () => emit('buyListedTile', { idx: selectedTile }));
+    live.push(() => {
+      const my = me();
+      btn.disabled = !my || my.cash < tile.listPrice;
+    });
+    panel.appendChild(btn);
   }
 
   // 도시 정보 — 시세와 수요는 계속 변하므로 live 로 갱신한다
@@ -649,6 +687,58 @@ function buildTilePanel(panel, tile, live) {
       hint.classList.toggle('hidden', t.route !== null && t.route !== undefined);
     });
   }
+
+  // 내 땅이면 팔 수 있다 — 은행에 넘기거나, 부동산 매물로 내놓거나
+  if (tile.owner === ME) {
+    panel.appendChild(el('hr', 'tp-sep'));
+    const value = tileValue(selectedTile);
+    const sell = el('button', 'wide danger', `💰 매각 (${fmt(value)})`);
+    sell.addEventListener('click', () => {
+      emit('sellTile', { idx: selectedTile });
+      selectedTile = null;
+    });
+    panel.appendChild(sell);
+
+    const listRow = el('div', 'ship-form');
+    const price = el('input');
+    price.type = 'number';
+    price.min = '1';
+    price.placeholder = '희망가';
+    keepInput(price, 'list-price');
+    const listBtn = el('button', '', tile.listPrice ? '매물 내리기' : '🏠 매물로 내놓기');
+    listBtn.addEventListener('click', () => {
+      if (tile.listPrice) {
+        emit('unlistTile', { idx: selectedTile });
+      } else {
+        const v = Math.floor(Number(price.value) || 0);
+        if (v < 1) return toast('희망 가격을 입력해 주세요.');
+        emit('listTile', { idx: selectedTile, price: v });
+      }
+    });
+    listRow.appendChild(price);
+    listRow.appendChild(listBtn);
+    panel.appendChild(listRow);
+
+    if (tile.listPrice) {
+      panel.appendChild(el('div', 'tp-row small listed', `🏠 ${fmt(tile.listPrice)}에 매물로 나와 있습니다`));
+    } else {
+      panel.appendChild(el('div', 'tp-row small', '매물로 내놓으면 다른 회사가 그 값에 사 갈 수 있습니다.'));
+    }
+  }
+}
+
+/** 땅+건물 평가액 (서버의 tileValue 와 같은 계산) */
+function tileValue(idx) {
+  const g = S.game;
+  const C = g.constants;
+  const tile = g.map.tiles[idx];
+  if (!tile) return 0;
+  let v = C.tileTypes[tile.t].price || 0;
+  if (tile.b) v += C.buildings[tile.b].cost * C.resaleRate;
+  for (let lv = 1; lv < (tile.level || 1); lv++) {
+    v += C.buildings.factory.upgradeCost * lv * C.resaleRate;
+  }
+  return Math.round(v);
 }
 
 /* ------------------------------------------------------------------ 탭 */
@@ -788,7 +878,7 @@ function renderStocks() {
         const now = gg.players.find((x) => x.id === p.id);
         const y = gg.constants.dividendYield;
         price.textContent = ` ${fmt1(s.price)}/주`;
-        float.textContent = ` 유통 ${s.float}주`;
+        float.textContent = ` 살 수 있는 물량 ${s.float + s.npc}주`;
 
         // 이 회사 주식에서 내가 받는 배당 / 내 회사가 물고 있는 배당
         const mine = me();
@@ -821,6 +911,10 @@ function renderStocks() {
         }
       });
 
+      // 공매도 잔고 (있을 때만 보인다)
+      const shortRow = el('div', 'small short-row hidden');
+      row.appendChild(shortRow);
+
       if (my && !g.ended) {
         const controls = el('div', 'trade-controls');
         const qty = el('input');
@@ -839,9 +933,42 @@ function renderStocks() {
         controls.appendChild(qty);
         controls.appendChild(buy);
         controls.appendChild(sell);
+
+        // 자기 회사는 공매도할 수 없다
+        if (p.id !== ME) {
+          const shortBtn = el('button', 'short', '공매도');
+          const coverBtn = el('button', 'cover', '환매');
+          shortBtn.title = '주식을 빌려 미리 판다. 주가가 내려가면 싸게 되사서 차익을 남긴다.';
+          coverBtn.title = '빌린 주식을 되사서 갚는다.';
+          shortBtn.addEventListener('click', () =>
+            emit('shortSell', { company: p.id, qty: keptValue('stk-' + p.id, 1) })
+          );
+          coverBtn.addEventListener('click', () =>
+            emit('coverShort', { company: p.id, qty: keptValue('stk-' + p.id, 1) })
+          );
+          controls.appendChild(shortBtn);
+          controls.appendChild(coverBtn);
+        }
         row.appendChild(controls);
       }
       box.appendChild(row);
+
+      live.push(() => {
+        const my2 = me();
+        const pos = my2 && my2.shorts ? my2.shorts[p.id] : null;
+        if (!pos || !pos.shares) {
+          shortRow.classList.add('hidden');
+          return;
+        }
+        const cur = S.game.stocks[p.id].price;
+        const pnl = (pos.avg - cur) * pos.shares;
+        shortRow.classList.remove('hidden');
+        shortRow.textContent =
+          `📉 공매도 ${pos.shares}주 · 평균 ${fmt1(pos.avg)} → 현재 ${fmt1(cur)} · ` +
+          `평가손익 ${pnl >= 0 ? '+' : ''}${fmt(pnl)}`;
+        shortRow.classList.toggle('up', pnl >= 0);
+        shortRow.classList.toggle('down', pnl < 0);
+      });
     }
   });
 }
@@ -852,9 +979,45 @@ function renderCompany() {
   const g = S.game;
   // 순위가 바뀔 때만 카드 순서를 다시 짠다 (매번 다시 그리면 화면이 요동친다)
   const order = [...g.players].sort((a, b) => b.netWorth - a.netWorth).map((p) => p.id);
-  renderPane('company', 'company|' + order.join(','), (live) => {
+  renderPane('company', 'company|' + order.join(',') + '|' + !!me() + '|' + g.ended, (live) => {
     const box = $('#tab-company');
     box.innerHTML = '';
+
+    // 대출 — 초반에 설비를 깔 돈이 모자랄 때 쓴다
+    if (me() && !g.ended) {
+      const card = el('div', 'company-card loan-card');
+      card.appendChild(el('b', '', '🏦 대출'));
+      const info = el('div', 'small');
+      card.appendChild(info);
+      const form = el('div', 'ship-form');
+      const amount = el('input');
+      amount.type = 'number';
+      amount.min = '1';
+      amount.placeholder = '금액';
+      keepInput(amount, 'loan-amt');
+      const borrow = el('button', 'buy', '대출');
+      const repay = el('button', 'sell', '상환');
+      borrow.addEventListener('click', () => emit('borrow', { amount: keptValue('loan-amt', 0) }));
+      repay.addEventListener('click', () => emit('repay', { amount: keptValue('loan-amt', 0) }));
+      form.appendChild(amount);
+      form.appendChild(borrow);
+      form.appendChild(repay);
+      card.appendChild(form);
+      box.appendChild(card);
+
+      live.push(() => {
+        const my = me();
+        if (!my) return;
+        const rate = Math.round(S.game.constants.loanInterest * 10000) / 100;
+        info.innerHTML = '';
+        info.appendChild(
+          el('span', my.debt > 0 ? 'down' : '', `빚 ${fmt(my.debt)}`)
+        );
+        info.appendChild(
+          el('span', '', ` · 이자 ${rate}%/초 (-${fmt1(my.debt * S.game.constants.loanInterest)}/초) · 한도 ${fmt(my.credit)}`)
+        );
+      });
+    }
 
     order.forEach((pid, i) => {
       const p = g.players.find((x) => x.id === pid);
@@ -884,7 +1047,8 @@ function renderCompany() {
         const gg = S.game;
         const now = gg.players.find((x) => x.id === pid);
         if (!now) return;
-        moneyText.textContent = `현금 ${fmt(now.cash)} · 순자산 ${fmt(now.netWorth)} · `;
+        const debt = now.debt > 0 ? ` · 빚 ${fmt(now.debt)}` : '';
+        moneyText.textContent = `현금 ${fmt(now.cash)} · 순자산 ${fmt(now.netWorth)}${debt} · `;
         incomeText.textContent = `${now.incomePerSec >= 0 ? '+' : ''}${fmt1(now.incomePerSec)}/초`;
         incomeText.className = now.incomePerSec > 0.05 ? 'up' : now.incomePerSec < -0.05 ? 'down' : '';
 
@@ -937,10 +1101,20 @@ function renderResult() {
     li.style.borderLeft = `4px solid ${r.color}`;
     list.appendChild(li);
   });
+
+  const isHost = ME === S.hostId;
+  $('#result-restart').classList.toggle('hidden', !isHost);
+  $('#result-hint').textContent = isHost
+    ? '다시 하기를 누르면 대기실로 돌아갑니다. 설정을 바꿔 다시 시작하세요.'
+    : '방장이 다시 시작하기를 기다리는 중...';
 }
 $('#result-close').addEventListener('click', () => {
   resultDismissed = true;
   $('#result-overlay').classList.add('hidden');
+});
+$('#result-restart').addEventListener('click', () => {
+  resultDismissed = true;
+  emit('restart');
 });
 
 /* ------------------------------------------------------------------ 채팅 */

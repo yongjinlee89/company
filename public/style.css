@@ -586,6 +586,64 @@ input:focus, select:focus {
   color: #ff8080;
 }
 
+/* 사건 배너 */
+#event-banner {
+  padding: 7px 14px;
+  background: #1f3a2a;
+  border-bottom: 1px solid var(--line);
+  color: #8ff0b0;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+#event-banner.bad {
+  background: #3a2320;
+  color: #ffb0a0;
+}
+
+/* 공매도 */
+.trade-controls .short {
+  background: #6b3fa0;
+  border-color: #6b3fa0;
+}
+
+.trade-controls .cover {
+  background: #3f7a6b;
+  border-color: #3f7a6b;
+}
+
+.short-row {
+  font-variant-numeric: tabular-nums;
+}
+
+.short-row.up {
+  color: #4ade80;
+}
+
+.short-row.down {
+  color: #ff8080;
+}
+
+/* 자산 매각 / 부동산 */
+.tp-sep {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 2px 0;
+}
+
+button.danger {
+  background: #7a3b39;
+  border-color: #7a3b39;
+}
+
+.listed {
+  color: var(--accent);
+}
+
+.loan-card {
+  border-color: #4a5568;
+}
+
 .holders {
   line-height: 1.5;
 }

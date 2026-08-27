@@ -212,7 +212,20 @@ class Room {
     this.stopLoop();
     this.phase = 'lobby';
     this.game = null;
+    // 게임 중 나간 사람의 빈자리는 정리한다 (봇은 그대로 두고 다시 쓴다)
+    this.players = this.players.filter((p) => p.connected || p.isBot);
+    if (!this.player(this.hostId)) this.reassignHost();
     this.touch();
+  }
+
+  /** 게임이 끝난 뒤 대기실로 되돌린다 (다시 하기) */
+  restart(playerId) {
+    if (this.phase === 'lobby') return { ok: true };
+    if (this.phase !== 'ended') return { ok: false, error: '게임이 아직 진행 중입니다.' };
+    if (playerId !== this.hostId) return { ok: false, error: '방장만 다시 시작할 수 있습니다.' };
+    this.resetToLobby();
+    this.pushLog('대기실로 돌아왔습니다. 설정을 바꾸고 다시 시작하세요.');
+    return { ok: true };
   }
 
   /* ---------------------------------------------------------------- 실시간 루프 */

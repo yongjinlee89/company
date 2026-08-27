@@ -179,6 +179,38 @@ function runEndTest() {
     assert.ok(endBroadcast && endBroadcast.full, '종료는 전체 상태로 알린다');
     assert.strictEqual(room._loop, null, '끝나면 루프가 멈춘다');
     console.log('✓ 제한 시간 종료');
-    console.log('\n방 테스트 전부 통과!');
+
+    // 끝난 뒤 다시 시작할 수 있어야 한다
+    assert.ok(!room.start('a').ok, '끝난 방은 바로 다시 시작되지 않는다');
+    assert.ok(!room.restart('b').ok, '방장만 다시 시작할 수 있다');
+    assert.ok(room.restart('a').ok);
+    assert.strictEqual(room.phase, 'lobby', '대기실로 돌아간다');
+    assert.strictEqual(room.game, null);
+    assert.strictEqual(room.players.length, 2, '참가자는 그대로 남는다');
+
+    // 대기실로 돌아왔으니 설정을 바꾸고 새 판을 시작할 수 있다
+    assert.ok(room.updateSettings('a', { startCash: 2000 }).ok);
+    assert.ok(room.start('a').ok, '새 판을 시작할 수 있다');
+    assert.strictEqual(room.phase, 'playing');
+    assert.strictEqual(room.game.players[0].cash, 2000);
+    assert.strictEqual(room.game.elapsed, 0, '새 게임은 처음부터 시작한다');
+    room.stopLoop();
+
+    // 게임 중 나간 사람의 빈자리는 다시 하기 때 정리된다
+    const r2 = newRoom();
+    r2.join('a', '갑', 's1');
+    r2.join('b', '을', 's2');
+    r2.settings.duration = 1;
+    r2.start('a');
+    r2.disconnect('s2');
+    setTimeout(() => {
+      assert.strictEqual(r2.phase, 'ended');
+      r2.restart('a');
+      assert.strictEqual(r2.players.length, 1, '나간 사람 자리는 정리된다');
+      assert.strictEqual(r2.hostId, 'a');
+      r2.stopLoop();
+      console.log('✓ 다시 하기');
+      console.log('\n방 테스트 전부 통과!');
+    }, 1800);
   }, 1800);
 }
