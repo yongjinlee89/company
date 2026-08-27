@@ -23,12 +23,13 @@
       <details class="rules">
         <summary>게임 방법</summary>
         <ul>
-          <li>매 라운드 자유롭게 행동하고, 전원 준비 또는 시간 종료 시 정산됩니다.</li>
+          <li><b>실시간</b>으로 진행됩니다. 턴이 없고, 공장은 초당 계속 생산하고 돈은 초당 계속 들어옵니다.</li>
           <li>땅을 사서 <b>광산·시추소·농장</b>으로 원자재를, <b>공장</b>으로 제품(기계·식품)을 생산합니다.</li>
-          <li>제품은 <b>도시</b>에 배송해 판매합니다. 거리에 따라 트럭/기차/항공이 자동 선택되고 운송비가 달라집니다.</li>
+          <li>공장에 <b>배송 도시</b>를 지정하면 만들어지는 족족 자동으로 팔립니다. 거리와 물동량에 따라 트럭/기차/항공이 자동 선택되고 운송비가 달라집니다.</li>
+          <li>한 도시에 계속 쏟아부으면 <b>수요가 떨어져</b> 값이 내려갑니다. 시간이 지나면 회복됩니다.</li>
           <li>원자재는 <b>시장</b>에서 거래합니다. 사면 오르고 팔면 내리는 수요·공급 가격입니다.</li>
-          <li>모든 회사는 100주의 주식이 있습니다(창업자 40주 + 시장 60주). <b>51주</b>를 모으면 경영권을 인수해 상대 이익의 일부를 가져옵니다.</li>
-          <li>마지막 라운드 종료 시 <b>순자산</b>이 가장 많은 회사가 우승합니다.</li>
+          <li>모든 회사는 100주의 주식이 있습니다(창업자 40주 + 시장 60주). <b>51주</b>를 모으면 경영권을 인수해 상대 매출의 일부를 실시간으로 가져옵니다.</li>
+          <li>제한 시간이 끝났을 때 <b>순자산</b>이 가장 많은 회사가 우승합니다.</li>
         </ul>
       </details>
     </div>
@@ -56,14 +57,14 @@
   <section id="screen-game" class="screen hidden">
     <header id="topbar">
       <div class="top-left">
-        <span id="hud-round"></span>
         <span id="hud-timer"></span>
       </div>
       <div class="top-mid" id="hud-inv"></div>
       <div class="top-right">
+        <span id="hud-income"></span>
         <span id="hud-cash"></span>
-        <button id="ready-btn" class="primary small">준비 완료</button>
       </div>
+      <div id="time-bar"><div id="time-fill"></div></div>
     </header>
 
     <main id="game-main">

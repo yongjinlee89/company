@@ -234,14 +234,102 @@ input:focus, select:focus {
 }
 
 #topbar {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 8px 14px;
+  padding: 8px 14px 10px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
+}
+
+/* 남은 시간 게이지 */
+#time-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+#time-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--primary);
+  transition: width 0.2s linear;
+}
+
+.income {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.income.up {
+  color: #4ade80;
+}
+
+.income.down {
+  color: #ff8080;
+}
+
+/* 배송 노선 선택 */
+.route-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 0.82rem;
+}
+
+.route-row.on {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.route-row.best:not(.on) {
+  border-color: #4ade80;
+}
+
+.route-city {
+  font-weight: 600;
+}
+
+.route-net {
+  color: #4ade80;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.route-row.on .route-net {
+  color: #fff;
+}
+
+.route-net.down {
+  color: #ff8080;
+}
+
+.route-info {
+  text-align: right;
+}
+
+.route-row.on .route-info {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.tp-row.warn {
+  color: #ffb020;
+}
+
+.rank {
+  color: var(--dim);
+  font-size: 0.78rem;
+  min-width: 2.2em;
 }
 
 .top-left, .top-right {

@@ -1,49 +1,53 @@
 'use strict';
 
 const { Game } = require('./game');
-const { playRound: botPlayRound } = require('./bot');
+const { think: botThink } = require('./bot');
 
 const MIN_PLAYERS = 2;
 const MAX_PLAYERS = 6;
 
 const BOT_NAMES = ['알파', '베타', '감마', '델타', '엡실론'];
 
+const TICK_MS = 250; // 시뮬레이션 간격
+const BROADCAST_EVERY = 2; // 몇 틱마다 화면을 갱신할지 (250ms × 2 = 0.5초)
+const BOT_THINK_MS = 2500; // 컴퓨터가 판단하는 주기
+
 const DEFAULT_SETTINGS = {
   startCash: 1000, // 시작 자금
-  rounds: 20, // 총 라운드
-  roundTime: 90, // 라운드 제한 시간 (초)
+  duration: 600, // 게임 시간 (초)
 };
 
 const SETTING_CHOICES = {
   startCash: [500, 1000, 2000, 3000],
-  rounds: [10, 15, 20, 30],
-  roundTime: [60, 90, 120, 180],
+  duration: [300, 600, 900, 1200],
 };
 
 /**
- * 방 하나. 대기실(로비) 상태와 게임 진행을 관리한다.
+ * 방 하나. 대기실 상태와 실시간 게임 루프를 관리한다.
  * phase: 'lobby' | 'playing' | 'ended'
  */
 class Room {
   /**
    * @param {string} id
-   * @param {(room: Room) => void} onChange 상태가 바뀌면 호출 (브로드캐스트)
+   * @param {(room: Room, full?: boolean) => void} onChange 상태가 바뀌면 호출 (브로드캐스트)
    */
   constructor(id, onChange) {
     this.id = id;
     this.onChange = onChange || (() => {});
     this.phase = 'lobby';
     this.settings = { ...DEFAULT_SETTINGS };
-    /** @type {Array<{id,name,socketId,connected,voice,muted}>} */
+    /** @type {Array<{id,name,socketId,connected,isBot,voice,muted}>} */
     this.players = [];
     this.hostId = null;
     this.game = null;
     this.chat = [];
     this.updatedAt = Date.now();
-    this.roundEndsAt = null;
-    this._roundTimer = null;
-    /** 봇 행동 예약 타이머 (라운드가 바뀌거나 방이 정리될 때 모두 취소한다) */
-    this._botTimers = [];
+    this._loop = null;
+    this._ticks = 0;
+    this._botClock = 0;
+    // 채팅/기록은 바뀌었을 때만 실어 보내려고 마지막으로 보낸 길이를 기억해 둔다
+    this._sentChatLen = -1;
+    this._sentLogLen = -1;
   }
 
   touch() {
@@ -102,7 +106,7 @@ class Room {
       this.pushLog(`${p.name} 님이 나갔습니다.`);
       if (this.hostId === playerId) this.reassignHost();
     } else {
-      // 게임 중에는 자리를 유지한다 (재접속 가능)
+      // 게임 중에는 자리를 유지한다 (재접속 가능, 회사는 계속 돌아간다)
       p.connected = false;
       p.socketId = null;
       this.pushLog(`${p.name} 님이 자리를 비웠습니다.`);
@@ -168,47 +172,6 @@ class Room {
     return { ok: false, error: '뺄 컴퓨터가 없습니다.' };
   }
 
-  /**
-   * 이번 라운드의 봇 행동을 예약한다.
-   * 사람이 보기에 자연스럽도록 조금씩 시차를 두고 움직인 뒤 준비를 누른다.
-   */
-  scheduleBots() {
-    this.clearBotTimers();
-    if (this.phase !== 'playing' || !this.game || this.game.ended) return;
-    const round = this.game.round;
-    const stale = () => this.phase !== 'playing' || !this.game || this.game.round !== round;
-
-    this.players
-      .filter((p) => p.isBot)
-      .forEach((bot, i) => {
-        const delay = 1200 + i * 700 + Math.floor(Math.random() * 900);
-        this._botTimers.push(
-          setTimeout(() => {
-            if (stale()) return;
-            try {
-              botPlayRound(this.game, bot.id);
-            } catch (err) {
-              console.error('[bot] 행동 중 오류', err);
-            }
-            this.touch();
-            this.onChange(this);
-            this._botTimers.push(
-              setTimeout(() => {
-                if (stale()) return;
-                // setReady 안에서 전원 준비 시 정산 + 브로드캐스트까지 처리된다
-                if (this.setReady(bot.id, true).ok) this.onChange(this);
-              }, 600 + Math.floor(Math.random() * 700))
-            );
-          }, delay)
-        );
-      });
-  }
-
-  clearBotTimers() {
-    for (const t of this._botTimers) clearTimeout(t);
-    this._botTimers = [];
-  }
-
   /* ---------------------------------------------------------------- 설정/시작 */
 
   updateSettings(playerId, patch) {
@@ -237,74 +200,77 @@ class Room {
       connected.map((p) => ({ id: p.id, name: p.name })),
       { ...this.settings }
     );
-    this.game.pushLog(`게임 시작! 시작 자금 ${this.settings.startCash}, 총 ${this.settings.rounds}라운드`);
-    this.startRoundTimer();
-    this.scheduleBots();
+    this.game.pushLog(
+      `게임 시작! 시작 자금 ${this.settings.startCash}, 제한 시간 ${Math.round(this.settings.duration / 60)}분`
+    );
+    this.startLoop();
     this.touch();
     return { ok: true };
   }
 
   resetToLobby() {
-    this.clearAutoTimer();
+    this.stopLoop();
     this.phase = 'lobby';
     this.game = null;
-    this.roundEndsAt = null;
     this.touch();
   }
 
-  /* ---------------------------------------------------------------- 라운드 타이머 */
+  /* ---------------------------------------------------------------- 실시간 루프 */
 
-  startRoundTimer() {
-    this.clearAutoTimer();
-    if (!this.game || this.game.ended) {
-      this.roundEndsAt = null;
-      return;
-    }
-    const ms = this.settings.roundTime * 1000;
-    this.roundEndsAt = Date.now() + ms;
-    this._roundTimer = setTimeout(() => this.finishRound(), ms);
+  startLoop() {
+    this.stopLoop();
+    this._ticks = 0;
+    this._botClock = 0;
+    this._loop = setInterval(() => this.step(), TICK_MS);
   }
 
+  stopLoop() {
+    if (this._loop) {
+      clearInterval(this._loop);
+      this._loop = null;
+    }
+  }
+
+  /** 예전 이름 호환 — 방 정리 시 호출된다 */
   clearAutoTimer() {
-    if (this._roundTimer) {
-      clearTimeout(this._roundTimer);
-      this._roundTimer = null;
-    }
-    this.clearBotTimers();
+    this.stopLoop();
   }
 
-  finishRound() {
+  step() {
     if (this.phase !== 'playing' || !this.game) return;
-    this.clearBotTimers();
-    this.game.resolveRound();
+    this.game.tick(TICK_MS / 1000);
+
+    // 컴퓨터 플레이어 판단
+    this._botClock += TICK_MS;
+    if (this._botClock >= BOT_THINK_MS) {
+      this._botClock = 0;
+      let mapChanged = false;
+      for (const p of this.players) {
+        if (!p.isBot) continue;
+        try {
+          if (botThink(this.game, p.id)) mapChanged = true;
+        } catch (err) {
+          console.error('[bot] 판단 중 오류', err);
+        }
+      }
+      // 맵이 바뀌었으니 전체 상태를 보낸다.
+      // (touch() 는 하지 않는다 — 사람이 모두 나간 방은 그대로 정리 대상이어야 한다)
+      if (mapChanged) {
+        this.onChange(this, true);
+        return;
+      }
+    }
+
     if (this.game.ended) {
       this.phase = 'ended';
-      this.roundEndsAt = null;
-      this.clearAutoTimer();
-    } else {
-      this.startRoundTimer();
-      this.scheduleBots();
+      this.stopLoop();
+      this.touch();
+      this.onChange(this, true);
+      return;
     }
-    this.touch();
-    this.onChange(this);
-  }
 
-  setReady(playerId, ready) {
-    if (this.phase !== 'playing' || !this.game) return { ok: false, error: '게임 중이 아닙니다.' };
-    const gp = this.game.player(playerId);
-    if (!gp) return { ok: false, error: '게임 참가자가 아닙니다.' };
-    gp.ready = !!ready;
-    // 접속 중인 전원이 준비되면 바로 정산
-    const allReady = this.game.players.every((gp2) => {
-      const rp = this.player(gp2.id);
-      return gp2.ready || !rp || !rp.connected;
-    });
-    if (allReady) {
-      // 브로드캐스트는 finishRound 가 한다. 중복 방지를 위해 여기서는 ok 만 반환.
-      setImmediate(() => this.finishRound());
-    }
-    this.touch();
-    return { ok: true };
+    this._ticks++;
+    if (this._ticks % BROADCAST_EVERY === 0) this.onChange(this);
   }
 
   /* ---------------------------------------------------------------- 게임 행동 위임 */
@@ -328,18 +294,26 @@ class Room {
     }
   }
 
-  stateFor(playerId) {
+  /**
+   * 방 전체에 뿌릴 상태를 만든다.
+   *
+   * 이 게임에는 숨겨진 정보가 없으므로(달무티의 손패 같은 것) 모두가 같은 상태를 본다.
+   * 그래서 플레이어마다 따로 만들지 않고 한 번만 만들어 방에 통째로 보낸다.
+   * 자기 자신이 누구인지는 클라이언트가 이미 알고 있다.
+   *
+   * @param {boolean} full 맵·상수까지 모두 보낼지.
+   *   맵은 땅을 사거나 건물을 지을 때만 바뀌므로, 0.5초마다 도는 주기 갱신에서는 빼서
+   *   트래픽을 아낀다. 클라이언트는 직전에 받은 맵을 그대로 이어 쓴다.
+   */
+  state(full = true) {
     const base = {
       roomId: this.id,
       phase: this.phase,
-      you: playerId,
       hostId: this.hostId,
       settings: this.settings,
       settingChoices: SETTING_CHOICES,
       minPlayers: MIN_PLAYERS,
       maxPlayers: MAX_PLAYERS,
-      roundEndsAt: this.roundEndsAt,
-      chat: this.chat.slice(-60),
       roomPlayers: this.players.map((p) => ({
         id: p.id,
         name: p.name,
@@ -349,12 +323,20 @@ class Room {
         muted: p.muted,
       })),
     };
+    // 채팅·기록은 내용이 바뀌었을 때만 싣는다
+    if (full || this.chat.length !== this._sentChatLen) {
+      base.chat = this.chat.slice(-60);
+      this._sentChatLen = this.chat.length;
+    }
     if (this.game) {
-      base.game = this.game.publicState();
-      base.log = this.game.log.slice(-60);
+      base.game = this.game.publicState(full);
+      if (full || this.game.log.length !== this._sentLogLen) {
+        base.log = this.game.log.slice(-40);
+        this._sentLogLen = this.game.log.length;
+      }
     }
     return base;
   }
 }
 
-module.exports = { Room, MIN_PLAYERS, MAX_PLAYERS, DEFAULT_SETTINGS, SETTING_CHOICES };
+module.exports = { Room, MIN_PLAYERS, MAX_PLAYERS, DEFAULT_SETTINGS, SETTING_CHOICES, TICK_MS };

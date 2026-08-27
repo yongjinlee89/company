@@ -26,16 +26,20 @@ const rooms = new Map();
 /** socket.id -> {roomId, playerId} */
 const sessions = new Map();
 
-function broadcast(room) {
-  for (const p of room.players) {
-    if (p.socketId) io.to(p.socketId).emit('state', room.stateFor(p.id));
-  }
+/**
+ * 방 전체에 같은 상태를 한 번만 직렬화해서 보낸다.
+ * 숨겨진 정보가 없는 게임이라 가능하고, 0.5초마다 도는 실시간 갱신에서 비용이 크게 줄어든다.
+ *
+ * @param {boolean} full 맵·상수까지 실어 보낼지 (입장 직후 / 맵이 바뀐 순간)
+ */
+function broadcast(room, full = true) {
+  io.to(room.id).emit('state', room.state(full));
 }
 
 function getRoom(roomId) {
   let room = rooms.get(roomId);
   if (!room) {
-    room = new Room(roomId, (r) => broadcast(r));
+    room = new Room(roomId, (r, full) => broadcast(r, full));
     rooms.set(roomId, room);
   }
   return room;
@@ -76,7 +80,8 @@ io.on('connection', (socket) => {
     sessions.set(socket.id, { roomId, playerId });
     socket.join(roomId);
     if (ack) ack({ ok: true, roomId });
-    broadcast(room);
+    // 새로 들어온 사람도 맵을 받아야 하므로 방 전체에 전체 상태를 보낸다
+    broadcast(room, true);
   });
 
   function withRoom(handler) {
@@ -93,8 +98,9 @@ io.on('connection', (socket) => {
       }
       const result = handler(room, s.playerId, payload || {}) || { ok: true };
       if (ack) ack(result);
-      // 거부된 요청은 상태가 바뀌지 않았으므로 브로드캐스트하지 않는다
-      if (result.ok) broadcast(room);
+      // 거부된 요청은 상태가 바뀌지 않았으므로 브로드캐스트하지 않는다.
+      // 사람의 행동은 드물게 일어나므로 맵까지 포함한 전체 상태를 보낸다.
+      if (result.ok) broadcast(room, true);
     };
   }
 
@@ -110,21 +116,10 @@ io.on('connection', (socket) => {
   socket.on('buyTile', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.buyTile(pid, p.idx))));
   socket.on('build', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.build(pid, p.idx, p.kind))));
   socket.on('setFactoryMode', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.setFactoryMode(pid, p.idx, p.mode))));
-  socket.on('ship', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.ship(pid, p))));
+  socket.on('setRoute', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.setRoute(pid, p.idx, p.city))));
+  socket.on('upgradeFactory', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.upgradeFactory(pid, p.idx))));
   socket.on('trade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.trade(pid, p))));
   socket.on('stockTrade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.stockTrade(pid, p))));
-  socket.on('ready', withRoom((room, pid, p) => room.setReady(pid, p.ready)));
-
-  // 배송 견적은 상태를 바꾸지 않으므로 직접 응답만 한다
-  socket.on('quoteShip', (payload = {}, ack) => {
-    const s = sessions.get(socket.id);
-    const room = s && rooms.get(s.roomId);
-    if (!room || !room.game) {
-      if (ack) ack({ ok: false, error: '게임 중이 아닙니다.' });
-      return;
-    }
-    if (ack) ack(room.game.quoteShip(s.playerId, payload));
-  });
 
   /* ------------------------------------------------------------ 음성 채팅 */
   // 서버는 신호(SDP/ICE)만 중계한다. 음성 자체는 브라우저끼리 P2P 로 오간다.
@@ -220,7 +215,7 @@ io.on('connection', (socket) => {
       }
     }
     room.disconnect(socket.id);
-    broadcast(room);
+    broadcast(room, true);
   });
 });
 
