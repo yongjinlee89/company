@@ -18,7 +18,16 @@ const io = new Server(server, {
   cors: { origin: '*' },
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+// 배포한 뒤에도 브라우저에 옛 화면이 남지 않도록 매번 최신인지 확인하게 한다.
+// no-cache 는 "캐시하지 마라"가 아니라 "쓰기 전에 서버에 물어봐라" 라서,
+// 바뀐 게 없으면 304 만 오가므로 트래픽 부담은 거의 없다.
+app.use(
+  express.static(path.join(__dirname, 'public'), {
+    etag: true,
+    lastModified: true,
+    setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+  })
+);
 app.get('/healthz', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
 
 /** @type {Map<string, Room>} */
