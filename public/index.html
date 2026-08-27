@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>컴퍼니 — 회사 경영 보드게임</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ============================================== 로비 (입장 화면) -->
+  <section id="screen-join" class="screen">
+    <div class="join-card">
+      <h1>🏢 컴퍼니</h1>
+      <p class="sub">땅을 사고, 공장을 짓고, 시장을 흔들고, 라이벌 회사를 인수하세요.</p>
+      <label>이름
+        <input id="join-name" maxlength="16" placeholder="예: 왕회장" />
+      </label>
+      <label>방 코드
+        <input id="join-room" maxlength="24" placeholder="예: friends" />
+      </label>
+      <button id="join-btn" class="primary">입장하기</button>
+      <p id="join-error" class="error"></p>
+      <details class="rules">
+        <summary>게임 방법</summary>
+        <ul>
+          <li>매 라운드 자유롭게 행동하고, 전원 준비 또는 시간 종료 시 정산됩니다.</li>
+          <li>땅을 사서 <b>광산·시추소·농장</b>으로 원자재를, <b>공장</b>으로 제품(기계·식품)을 생산합니다.</li>
+          <li>제품은 <b>도시</b>에 배송해 판매합니다. 거리에 따라 트럭/기차/항공이 자동 선택되고 운송비가 달라집니다.</li>
+          <li>원자재는 <b>시장</b>에서 거래합니다. 사면 오르고 팔면 내리는 수요·공급 가격입니다.</li>
+          <li>모든 회사는 100주의 주식이 있습니다(창업자 40주 + 시장 60주). <b>51주</b>를 모으면 경영권을 인수해 상대 이익의 일부를 가져옵니다.</li>
+          <li>마지막 라운드 종료 시 <b>순자산</b>이 가장 많은 회사가 우승합니다.</li>
+        </ul>
+      </details>
+    </div>
+  </section>
+
+  <!-- ============================================== 대기실 -->
+  <section id="screen-lobby" class="screen hidden">
+    <div class="lobby-card">
+      <h2>대기실 <span id="lobby-room-code" class="room-code"></span></h2>
+      <ul id="lobby-players" class="lobby-players"></ul>
+      <div id="lobby-settings" class="lobby-settings"></div>
+      <div class="lobby-actions">
+        <button id="lobby-start" class="primary">게임 시작</button>
+        <button id="lobby-leave">나가기</button>
+      </div>
+      <p id="lobby-hint" class="hint"></p>
+    </div>
+  </section>
+
+  <!-- ============================================== 게임 화면 -->
+  <section id="screen-game" class="screen hidden">
+    <header id="topbar">
+      <div class="top-left">
+        <span id="hud-round"></span>
+        <span id="hud-timer"></span>
+      </div>
+      <div class="top-mid" id="hud-inv"></div>
+      <div class="top-right">
+        <span id="hud-cash"></span>
+        <button id="ready-btn" class="primary small">준비 완료</button>
+      </div>
+    </header>
+
+    <main id="game-main">
+      <div id="map-wrap">
+        <canvas id="map"></canvas>
+        <div id="tile-panel" class="hidden"></div>
+      </div>
+
+      <aside id="side">
+        <nav id="tabs">
+          <button data-tab="market" class="tab active">시장</button>
+          <button data-tab="stocks" class="tab">주식</button>
+          <button data-tab="company" class="tab">회사</button>
+          <button data-tab="log" class="tab">기록</button>
+        </nav>
+        <div id="tab-market" class="tab-body"></div>
+        <div id="tab-stocks" class="tab-body hidden"></div>
+        <div id="tab-company" class="tab-body hidden"></div>
+        <div id="tab-log" class="tab-body hidden">
+          <div id="log-list"></div>
+        </div>
+
+        <div id="chat-box">
+          <div id="chat-list"></div>
+          <form id="chat-form">
+            <input id="chat-input" maxlength="200" placeholder="채팅..." autocomplete="off" />
+            <button type="submit">전송</button>
+          </form>
+        </div>
+
+        <div id="voice-bar">
+          <button id="voice-toggle">🎙️ 음성 참여</button>
+          <button id="voice-mute" class="hidden">🔇 음소거</button>
+          <span id="voice-status"></span>
+        </div>
+      </aside>
+    </main>
+
+    <!-- 게임 종료 결과 -->
+    <div id="result-overlay" class="overlay hidden">
+      <div class="result-card">
+        <h2>🏆 최종 순위</h2>
+        <ol id="result-list"></ol>
+        <button id="result-close">닫기</button>
+      </div>
+    </div>
+  </section>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="voice.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>

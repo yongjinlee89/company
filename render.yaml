@@ -1,0 +1,13 @@
+# Render 무료 배포 설정 (Blueprint)
+# https://dashboard.render.com/blueprints 에서 이 저장소를 연결하면 자동으로 읽힙니다.
+services:
+  - type: web
+    name: company-tycoon
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
