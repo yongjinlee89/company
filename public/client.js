@@ -166,7 +166,6 @@ function render() {
   } else {
     renderGame();
   }
-  renderChat();
   renderVoice();
 }
 
@@ -1228,14 +1227,34 @@ function renderCompany() {
 
 /* ---------- 기록 ---------- */
 
+/** 게임 사건과 채팅을 시간순으로 한 목록에 모아 보여준다 */
 function renderLog() {
   const list = $('#log-list');
-  const items = S.log || [];
+  const items = [
+    ...(S.log || []).map((x) => ({ t: x.t, text: x.text })),
+    ...(S.chat || []).map((x) => ({ t: x.t, name: x.name, text: x.text })),
+  ]
+    .sort((a, b) => a.t - b.t)
+    .slice(-80);
+
   // 내용이 그대로면 스크롤 위치를 흔들지 않는다
-  if (list.dataset.len === String(items.length)) return;
-  list.dataset.len = String(items.length);
+  const key = items.length + ':' + (items.length ? items[items.length - 1].t : 0);
+  if (list.dataset.key === key) return;
+  list.dataset.key = key;
+
   list.innerHTML = '';
-  for (const item of items) list.appendChild(el('div', 'log-item', item.text));
+  for (const item of items) {
+    const row = el('div', 'log-item');
+    // '알림' 은 서버가 붙인 시스템 메시지라 발화자처럼 보이지 않게 한다
+    if (item.name && item.name !== '알림') {
+      row.classList.add('chat');
+      row.appendChild(el('b', '', item.name + ': '));
+      row.appendChild(el('span', '', item.text));
+    } else {
+      row.textContent = item.text;
+    }
+    list.appendChild(row);
+  }
   list.scrollTop = list.scrollHeight;
 }
 
@@ -1277,22 +1296,6 @@ $('#result-restart').addEventListener('click', () => {
 
 /* ------------------------------------------------------------------ 채팅 */
 
-function renderChat() {
-  if (!S) return;
-  const list = $('#chat-list');
-  const items = (S.chat || []).slice(-40);
-  if (list.dataset.len === String(items.length)) return;
-  list.dataset.len = String(items.length);
-  list.innerHTML = '';
-  for (const c of items) {
-    const row = el('div', 'chat-item');
-    row.appendChild(el('b', '', c.name + ': '));
-    row.appendChild(el('span', '', c.text));
-    list.appendChild(row);
-  }
-  list.scrollTop = list.scrollHeight;
-}
-
 $('#chat-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const input = $('#chat-input');
@@ -1319,9 +1322,14 @@ function renderVoice() {
   const toggle = $('#voice-toggle');
   const mute = $('#voice-mute');
   const status = $('#voice-status');
-  toggle.textContent = Voice.active ? '🎙️ 음성 종료' : '🎙️ 음성 참여';
+  // 상단바에 있으므로 짧게 (자세한 설명은 툴팁으로)
+  toggle.textContent = Voice.active ? '🎙️ 끄기' : '🎙️ 음성';
+  toggle.title = Voice.active ? '음성 채팅 나가기' : '음성 채팅 참여';
+  toggle.classList.toggle('on', Voice.active);
   mute.classList.toggle('hidden', !Voice.active);
-  mute.textContent = Voice.muted ? '🔊 음소거 해제' : '🔇 음소거';
+  mute.textContent = Voice.muted ? '🔊' : '🔇';
+  mute.title = Voice.muted ? '음소거 해제' : '음소거';
+  mute.classList.toggle('on', Voice.muted);
 
   if (Voice.active && S) {
     const speaking = [];

@@ -805,7 +805,14 @@ button.danger {
   color: #22a06b;
 }
 
+/* 기록 탭은 바깥이 아니라 안쪽 목록만 스크롤하고, 입력칸은 아래 고정 */
+#tab-log {
+  overflow: hidden;
+}
+
 #log-list {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -819,36 +826,14 @@ button.danger {
   border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
 }
 
-/* 채팅 */
-
-#chat-box {
-  border-top: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  height: 150px;
-  flex-shrink: 0;
-}
-
-#chat-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px 10px;
-  font-size: 0.82rem;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.chat-item b {
-  color: var(--accent);
-  font-weight: 600;
-}
+/* 채팅 — 기록 탭 아래에 붙는다 */
 
 #chat-form {
   display: flex;
   gap: 6px;
-  padding: 6px;
+  padding-top: 6px;
   border-top: 1px solid var(--line);
+  flex-shrink: 0;
 }
 
 #chat-form input {
@@ -857,23 +842,41 @@ button.danger {
   min-width: 0;
 }
 
-/* 음성 */
+.log-item.chat b {
+  color: var(--accent);
+  font-weight: 600;
+}
 
-#voice-bar {
+.log-item.chat {
+  color: var(--text);
+}
+
+/* 음성 — 상단바 자원 옆 */
+
+.top-voice {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-top: 1px solid var(--line);
-  font-size: 0.82rem;
-  flex-shrink: 0;
+  gap: 5px;
+  min-width: 0;
+}
+
+.top-voice button {
+  padding: 3px 8px;
+  font-size: 0.78rem;
+}
+
+.top-voice button.on {
+  background: #22a06b;
+  border-color: #22a06b;
 }
 
 #voice-status {
-  color: #22a06b;
+  color: #4ade80;
+  font-size: 0.75rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 12em;
 }
 
 /* 결과 오버레이 */
@@ -1048,16 +1051,13 @@ button.danger {
     gap: 6px;
   }
 
-  #chat-box {
-    height: 88px;
+  .top-voice button {
+    padding: 2px 6px;
+    font-size: 0.72rem;
   }
 
-  #chat-list {
-    padding: 5px 8px;
-  }
-
-  #voice-bar {
-    padding: 5px 8px;
+  #voice-status {
+    max-width: 7em;
   }
 
   #tile-panel {

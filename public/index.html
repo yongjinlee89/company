@@ -60,6 +60,11 @@
         <span id="hud-timer"></span>
       </div>
       <div class="top-mid" id="hud-inv"></div>
+      <div class="top-voice">
+        <button id="voice-toggle" class="small">🎙️ 음성</button>
+        <button id="voice-mute" class="small hidden">🔇</button>
+        <span id="voice-status"></span>
+      </div>
       <div class="top-right">
         <span id="hud-income"></span>
         <span id="hud-cash"></span>
@@ -85,22 +90,13 @@
         <div id="tab-market" class="tab-body"></div>
         <div id="tab-stocks" class="tab-body hidden"></div>
         <div id="tab-company" class="tab-body hidden"></div>
+        <!-- 기록 = 게임 사건 + 채팅을 한곳에 모아 보여준다 -->
         <div id="tab-log" class="tab-body hidden">
           <div id="log-list"></div>
-        </div>
-
-        <div id="chat-box">
-          <div id="chat-list"></div>
           <form id="chat-form">
             <input id="chat-input" maxlength="200" placeholder="채팅..." autocomplete="off" />
             <button type="submit">전송</button>
           </form>
-        </div>
-
-        <div id="voice-bar">
-          <button id="voice-toggle">🎙️ 음성 참여</button>
-          <button id="voice-mute" class="hidden">🔇 음소거</button>
-          <span id="voice-status"></span>
         </div>
       </aside>
     </main>
