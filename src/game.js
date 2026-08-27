@@ -15,8 +15,11 @@ const MAP_H = 12;
 const TOTAL_SHARES = 100; // 회사당 발행 주식 수
 const FOUNDER_SHARES = 40; // 창업자 보유분 (나머지 60주는 시장 유통)
 const TAKEOVER_SHARES = 51; // 이만큼 모으면 경영권 인수
-const DIVIDEND_RATE = 0.15; // 매출 중 배당으로 나가는 비율
-const TAKEOVER_CUT = 0.25; // 경영권 보유자가 가져가는 비율
+// 배당은 주가에 비례해 초당 지급된다. 0.002 = 주가의 0.2%/초.
+// 주가가 오를수록 배당도 커지고, 회사 현금에서 빠져나가므로 남에게 지분을
+// 많이 내준 회사는 그만큼 성장이 느려진다. (되사면 그만큼 부담이 사라진다)
+const DIVIDEND_YIELD = 0.002;
+const TAKEOVER_CUT = 0.25; // 경영권 보유자가 가져가는 매출 비율
 
 const MATERIALS = {
   iron: { name: '철광석', base: 10 },
@@ -491,34 +494,64 @@ class Game {
   /* ---------------------------------------------------------------- 정산 */
 
   /**
-   * 매출을 배당·경영권 몫으로 나누고 나머지를 회사가 가져간다.
-   * 실시간이라 매 tick 조금씩 흘러 들어간다.
+   * 매출에서 경영권 몫을 떼고 나머지를 회사가 가져간다.
+   * (배당은 매출이 아니라 주가를 따르므로 payDividends 에서 따로 처리한다)
    */
   payIncome(company, net) {
-    if (net <= 0) {
-      company.cash += net;
-      company._incomeAccum += net;
-      return;
+    if (net > 0) {
+      const controller = this.controllerOf(company.id);
+      if (controller) {
+        const cut = net * TAKEOVER_CUT;
+        controller.cash += cut;
+        controller._incomeAccum += cut;
+        net -= cut;
+      }
     }
-    let remain = net;
+    company.cash += net;
+    company._incomeAccum += net;
+  }
+
+  /**
+   * 배당 — 주가에 비례해 주주에게 초당 지급하고 회사 현금에서 뺀다.
+   * 자기 주식에는 나가지 않으므로, 되사면 배당 부담이 그만큼 줄어든다.
+   */
+  payDividends(dt) {
+    for (const company of this.players) {
+      const price = this.stocks[company.id].price;
+      const claims = [];
+      let due = 0;
+      for (const holder of this.players) {
+        if (holder.id === company.id) continue;
+        const n = holder.shares[company.id] || 0;
+        if (n <= 0) continue;
+        const amt = price * n * DIVIDEND_YIELD * dt;
+        claims.push({ holder, amt });
+        due += amt;
+      }
+      if (due <= 0) continue;
+      // 현금이 모자라면 있는 만큼만 나눠 준다 (회사가 마이너스로 가지 않게)
+      const payable = Math.min(due, Math.max(0, company.cash));
+      if (payable <= 0) continue;
+      const ratio = payable / due;
+      for (const { holder, amt } of claims) {
+        const paid = amt * ratio;
+        holder.cash += paid;
+        holder._incomeAccum += paid;
+      }
+      company.cash -= payable;
+      company._incomeAccum -= payable;
+    }
+  }
+
+  /** 어떤 회사가 지금 초당 물고 있는 배당 총액 (UI 표시용) */
+  dividendLoad(companyId) {
+    const price = this.stocks[companyId].price;
+    let n = 0;
     for (const holder of this.players) {
-      if (holder.id === company.id) continue;
-      const n = holder.shares[company.id] || 0;
-      if (n <= 0) continue;
-      const amt = net * DIVIDEND_RATE * (n / TOTAL_SHARES);
-      holder.cash += amt;
-      holder._incomeAccum += amt;
-      remain -= amt;
+      if (holder.id === companyId) continue;
+      n += holder.shares[companyId] || 0;
     }
-    const controller = this.controllerOf(company.id);
-    if (controller) {
-      const cut = net * TAKEOVER_CUT;
-      controller.cash += cut;
-      controller._incomeAccum += cut;
-      remain -= cut;
-    }
-    company.cash += remain;
-    company._incomeAccum += remain;
+    return Math.round(price * n * DIVIDEND_YIELD * 100) / 100;
   }
 
   /**
@@ -581,7 +614,10 @@ class Game {
       }
     }
 
-    // 3) 자재 시세는 기준가로, 도시 수요는 100% 로 서서히 회복
+    // 3) 배당 — 주가에 비례해 주주에게 흘러간다
+    this.payDividends(dt);
+
+    // 4) 자재 시세는 기준가로, 도시 수요는 100% 로 서서히 회복
     for (const m of Object.values(this.market)) {
       m.price = Math.round((m.price + (m.base - m.price) * 0.02 * dt) * 100) / 100;
     }
@@ -591,14 +627,14 @@ class Game {
       }
     }
 
-    // 4) 주가는 회사 순자산 기준 적정가를 따라간다
+    // 5) 주가는 회사 순자산 기준 적정가를 따라간다
     for (const p of this.players) {
       const s = this.stocks[p.id];
       const fair = Math.max(1, this.netWorth(p) / TOTAL_SHARES);
       s.price = Math.round(Math.max(1, s.price + (fair - s.price) * 0.05 * dt) * 100) / 100;
     }
 
-    // 5) 초당 수익 집계 (1초마다 갱신, 살짝 평활화해서 숫자가 튀지 않게)
+    // 6) 초당 수익 집계 (1초마다 갱신, 살짝 평활화해서 숫자가 튀지 않게)
     this._incomeTimer += dt;
     if (this._incomeTimer >= 1) {
       for (const p of this.players) {
@@ -609,7 +645,7 @@ class Game {
       this._incomeTimer = 0;
     }
 
-    // 6) 종료
+    // 7) 종료
     if (this.elapsed >= this.settings.duration) {
       this.finish();
     }
@@ -696,6 +732,8 @@ class Game {
         buildings: BUILDINGS,
         totalShares: TOTAL_SHARES,
         takeoverShares: TAKEOVER_SHARES,
+        dividendYield: DIVIDEND_YIELD,
+        takeoverCut: TAKEOVER_CUT,
       };
     }
     return state;
@@ -712,7 +750,7 @@ module.exports = {
   TOTAL_SHARES,
   FOUNDER_SHARES,
   TAKEOVER_SHARES,
-  DIVIDEND_RATE,
+  DIVIDEND_YIELD,
   TAKEOVER_CUT,
   transportQuote,
   chebyshev,

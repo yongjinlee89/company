@@ -5,7 +5,7 @@
 const assert = require('assert');
 const {
   Game, MATERIALS, PRODUCTS, TILE_TYPES, BUILDINGS,
-  TOTAL_SHARES, FOUNDER_SHARES, TAKEOVER_SHARES, DIVIDEND_RATE,
+  TOTAL_SHARES, FOUNDER_SHARES, TAKEOVER_SHARES, DIVIDEND_YIELD,
   transportQuote, generateMap, resourceCounts, MAP_W, MAP_H,
 } = require('../src/game');
 
@@ -186,20 +186,24 @@ function run(game, seconds) {
 /* ---------------- 거리가 멀수록 순이익이 준다 ---------------- */
 {
   const g = newGame();
-  // 도시에서 가장 가까운 평지와 가장 먼 평지를 비교
+  // 도시마다 가격 계수가 달라서, 거리 효과만 보려면 "같은 도시" 기준으로 비교해야 한다
+  const ci = 0;
   let near = null;
   let far = null;
   for (let i = 0; i < g.map.tiles.length; i++) {
     if (g.map.tiles[i].t !== 'plain') continue;
-    const d = Math.min(...g.cities.map((_, ci) => g.distToCity(i, ci)));
+    const d = g.distToCity(i, ci);
     if (!near || d < near.d) near = { i, d };
     if (!far || d > far.d) far = { i, d };
   }
-  const qNear = g.bestRoute(near.i, 'machine');
-  const qFar = g.bestRoute(far.i, 'machine');
+  const qNear = g.quoteRoute(near.i, ci, 'machine');
+  const qFar = g.quoteRoute(far.i, ci, 'machine');
   assert.ok(qNear.net > qFar.net, `가까운 쪽이 이득이 커야 한다 (${qNear.net} vs ${qFar.net})`);
   assert.ok(qNear.transport.cost < qFar.transport.cost, '가까우면 운송비가 싸다');
-  console.log(`✓ 거리에 따른 운송비 차이 (${near.d}칸 ${qNear.net}/초 vs ${far.d}칸 ${qFar.net}/초)`);
+  assert.strictEqual(qNear.revenue, qFar.revenue, '같은 도시면 매출은 같고 운송비만 다르다');
+  console.log(
+    `✓ 거리에 따른 운송비 차이 (${g.cities[ci].name}행: ${near.d}칸 ${qNear.net}/초 vs ${far.d}칸 ${qFar.net}/초)`
+  );
 }
 
 /* ---------------- 공장 증설 ---------------- */
@@ -262,6 +266,50 @@ function run(game, seconds) {
   console.log(`✓ 도시 수요 회복 (0.4 → ${Math.round(c.demand.machine * 100) / 100})`);
 }
 
+/* ---------------- 시장은 모두가 공유한다 ---------------- */
+{
+  const g = newGame(100000);
+  const a = g.player('a');
+  const b = g.player('b');
+
+  // 자재: 한 사람이 사면 모두에게 값이 오른다
+  const start = g.market.iron.price;
+  const bFirst = g.trade('b', { mat: 'iron', qty: 10, side: 'buy' }).total;
+  const afterA = (() => {
+    g.trade('a', { mat: 'iron', qty: 60, side: 'buy' }); // a 가 대량 매수
+    return g.market.iron.price;
+  })();
+  assert.ok(afterA > start, '남이 사면 시세가 오른다');
+  const bLater = g.trade('b', { mat: 'iron', qty: 10, side: 'buy' }).total;
+  assert.ok(bLater > bFirst, `a 가 사들인 뒤 b 는 더 비싸게 산다 (${bFirst} → ${bLater})`);
+
+  // 반대로 남이 팔면 모두에게 값이 내린다
+  const beforeSell = g.market.iron.price;
+  g.trade('a', { mat: 'iron', qty: 60, side: 'sell' });
+  assert.ok(g.market.iron.price < beforeSell, '남이 팔면 시세가 내린다');
+
+  // 주식도 같은 하나의 호가를 공유한다
+  const s0 = g.stocks.b.price;
+  g.stockTrade('a', { company: 'b', qty: 20, side: 'buy' });
+  assert.ok(g.stocks.b.price > s0, '남이 사면 주가가 오른다');
+
+  // 도시 수요도 공유 — 남이 쏟아부으면 내 노선 수익도 같이 떨어진다
+  const idxA = g.map.tiles.findIndex((t) => t.t === 'plain');
+  const idxB = g.map.tiles.findIndex((t, i) => t.t === 'plain' && i !== idxA);
+  g.buyTile('a', idxA);
+  g.build('a', idxA, 'factory');
+  g.buyTile('b', idxB);
+  g.build('b', idxB, 'factory');
+  const city = g.map.tiles[idxA].route;
+  const myNetBefore = g.quoteRoute(idxA, city, 'machine').net;
+  b.inv.machine = 20;
+  g.setRoute('b', idxB, city); // b 도 같은 도시로 쏟아붓는다
+  run(g, 15);
+  const myNetAfter = g.quoteRoute(idxA, city, 'machine').net;
+  assert.ok(myNetAfter < myNetBefore, `남이 같은 도시에 팔면 내 수익도 떨어진다 (${myNetBefore} → ${myNetAfter})`);
+  console.log('✓ 시장 공유 (자재/주식/도시 수요 모두 한 판)');
+}
+
 /* ---------------- 자재 시장 ---------------- */
 {
   const g = newGame(100000);
@@ -319,37 +367,90 @@ function run(game, seconds) {
   console.log('✓ 주식/경영권');
 }
 
-/* ---------------- 실시간 배당과 경영권 이익 ---------------- */
+/* ---------------- 배당은 주가를 따른다 ---------------- */
 {
   const g = newGame(5000);
   const a = g.player('a');
   const b = g.player('b');
+  a.cash = 100000;
 
-  // b 가 공장을 돌려 매출을 낸다 (20초를 돌리기에 넉넉한 만큼만 재료를 준다)
+  // a 가 b 지분 20주를 산다
+  g.stockTrade('a', { company: 'b', qty: 20, side: 'buy' });
+  assert.strictEqual(g.controllerOf('b'), null);
+
+  // 주가를 고정해 두고 10초간 받은 배당을 잰다
+  const price1 = 50;
+  g.stocks.b.price = price1;
+  const aCash0 = a.cash;
+  const bCash0 = b.cash;
+  g.payDividends(10);
+  const got1 = a.cash - aCash0;
+  const expected1 = price1 * 20 * DIVIDEND_YIELD * 10;
+  assert.ok(Math.abs(got1 - expected1) < 1e-6, `배당 = 주가 × 주식수 × ${DIVIDEND_YIELD}/초`);
+  assert.ok(Math.abs(bCash0 - b.cash - got1) < 1e-6, '배당은 회사 현금에서 나간다');
+
+  // 주가가 2배면 배당도 2배
+  g.stocks.b.price = price1 * 2;
+  const aCash1 = a.cash;
+  g.payDividends(10);
+  const got2 = a.cash - aCash1;
+  assert.ok(Math.abs(got2 - got1 * 2) < 1e-6, `주가가 오르면 배당도 비례해 오른다 (${got1} → ${got2})`);
+
+  // 주식이 많을수록 많이 받는다
+  g.stockTrade('a', { company: 'b', qty: 20, side: 'buy' });
+  g.stocks.b.price = price1;
+  const aCash2 = a.cash;
+  g.payDividends(10);
+  assert.ok(a.cash - aCash2 > got1 * 1.9, '40주는 20주의 두 배쯤 받는다');
+
+  // 자기 주식에는 배당이 나가지 않는다
+  const g2 = newGame(5000);
+  const solo = g2.player('a');
+  const cash0 = solo.cash;
+  g2.payDividends(10);
+  assert.strictEqual(solo.cash, cash0, '창업자 지분에는 배당이 나가지 않는다');
+
+  // 회사에 현금이 없으면 있는 만큼만 나간다 (마이너스로 가지 않는다)
+  const g3 = newGame(5000);
+  g3.player('a').cash = 100000;
+  g3.stockTrade('a', { company: 'b', qty: 30, side: 'buy' });
+  g3.player('b').cash = 5;
+  g3.stocks.b.price = 500;
+  g3.payDividends(10);
+  assert.ok(g3.player('b').cash >= 0, '회사 현금이 음수가 되지 않는다');
+  console.log(`✓ 주가 연동 배당 (주가 ${price1}×20주 10초 → ${Math.round(got1)})`);
+}
+
+/* ---------------- 경영권 인수는 매출에서 뗀다 ---------------- */
+{
+  const g = newGame(5000);
+  const a = g.player('a');
+  const b = g.player('b');
+  a.cash = 100000;
+
+  // b 가 공장을 돌려 매출을 낸다
   const idx = g.map.tiles.findIndex((t) => t.t === 'plain');
   g.buyTile('b', idx);
   g.build('b', idx, 'factory');
-  b.inv.iron = 40;
-  b.inv.oil = 20;
+  b.inv.iron = 60;
+  b.inv.oil = 30;
 
-  // a 가 b 지분을 20주 사서 배당만 받는 상태
-  // (주가는 회사 순자산을 따라 오르므로 지분을 넉넉히 살 현금을 쥐여 준다)
-  a.cash = 100000;
+  // 20주만 있을 때 (경영권 없음) 10초간 벌이
   g.stockTrade('a', { company: 'b', qty: 20, side: 'buy' });
   const aCash0 = a.cash;
   run(g, 10);
-  const dividend = a.cash - aCash0;
-  assert.ok(dividend > 0, '지분이 있으면 배당이 실시간으로 들어온다');
-  assert.strictEqual(g.controllerOf('b'), null);
+  const noControl = a.cash - aCash0;
 
-  // 51주까지 늘려 경영권을 가져오면 몫이 확 커진다
+  // 51주로 경영권을 쥐면 매출의 25%가 추가로 들어온다
   g.stockTrade('a', { company: 'b', qty: 31, side: 'buy' });
   assert.strictEqual(g.controllerOf('b').id, 'a');
   const aCash1 = a.cash;
   run(g, 10);
   const withControl = a.cash - aCash1;
-  assert.ok(withControl > dividend * 2, `경영권을 쥐면 훨씬 많이 가져간다 (${dividend} → ${withControl})`);
-  console.log(`✓ 실시간 배당/경영권 이익 (10초당 ${Math.round(dividend)} → ${Math.round(withControl)})`);
+  assert.ok(withControl > noControl * 2, `경영권을 쥐면 훨씬 많이 가져간다 (${noControl} → ${withControl})`);
+  console.log(
+    `✓ 경영권 인수 이익 (10초당 ${Math.round(noControl)} → ${Math.round(withControl)})`
+  );
 }
 
 /* ---------------- 게임 종료 / 순자산 ---------------- */

@@ -752,8 +752,14 @@ function renderStocks() {
     const box = $('#tab-stocks');
     const my = me();
     box.innerHTML = '';
+    const yieldPct = Math.round(g.constants.dividendYield * 1000) / 10;
     box.appendChild(
-      el('p', 'tab-hint', `회사당 ${g.constants.totalShares}주 · ${g.constants.takeoverShares}주를 모으면 경영권 인수`)
+      el(
+        'p',
+        'tab-hint',
+        `회사당 ${g.constants.totalShares}주 · 배당은 주가의 ${yieldPct}%/초 · ` +
+          `${g.constants.takeoverShares}주를 모으면 경영권 인수`
+      )
     );
 
     for (const p of g.players) {
@@ -769,6 +775,8 @@ function renderStocks() {
       head.appendChild(float);
       row.appendChild(head);
 
+      const div = el('div', 'small dividend');
+      row.appendChild(div);
       const holders = el('div', 'small holders');
       row.appendChild(holders);
       const takeover = el('div', 'takeover hidden');
@@ -778,8 +786,27 @@ function renderStocks() {
         const gg = S.game;
         const s = gg.stocks[p.id];
         const now = gg.players.find((x) => x.id === p.id);
+        const y = gg.constants.dividendYield;
         price.textContent = ` ${fmt1(s.price)}/주`;
         float.textContent = ` 유통 ${s.float}주`;
+
+        // 이 회사 주식에서 내가 받는 배당 / 내 회사가 물고 있는 배당
+        const mine = me();
+        if (p.id === ME) {
+          let out = 0;
+          for (const h of gg.players) {
+            if (h.id !== ME) out += h.shares[ME] || 0;
+          }
+          div.textContent = out > 0 ? `내가 내는 배당 -${fmt1(s.price * out * y)}/초` : '나가는 배당 없음';
+          div.classList.toggle('down', out > 0);
+          div.classList.remove('up');
+        } else {
+          const n = mine ? mine.shares[p.id] || 0 : 0;
+          div.textContent = n > 0 ? `내 배당 +${fmt1(s.price * n * y)}/초 (${n}주)` : '보유 없음';
+          div.classList.toggle('up', n > 0);
+          div.classList.remove('down');
+        }
+
         const parts = [];
         for (const holder of gg.players) {
           const n = holder.shares[p.id] || 0;

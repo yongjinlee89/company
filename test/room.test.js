@@ -146,6 +146,11 @@ function newRoom(onChange) {
     const built = room.game.map.tiles.some((t) => t.owner === botId && t.b);
     assert.ok(built, '컴퓨터가 건물을 지어야 한다');
 
+    // 4) 그런데 사람 회사는 절대 대신 움직여 주지 않는다
+    const humanBought = room.game.map.tiles.filter((t) => t.owner === 'a').length;
+    assert.strictEqual(humanBought, 1, '사람이 직접 산 땅 하나뿐이어야 한다');
+    assert.strictEqual(human._focus, undefined, '봇 로직이 사람 회사를 건드리면 안 된다');
+
     room.stopLoop();
     const stopped = room.game.elapsed;
     setTimeout(() => {
