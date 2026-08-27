@@ -6,7 +6,7 @@ const assert = require('assert');
 const {
   Game, MATERIALS, PRODUCTS, TILE_TYPES, BUILDINGS,
   TOTAL_SHARES, FOUNDER_SHARES, TAKEOVER_SHARES, DIVIDEND_RATE,
-  transportQuote, generateMap, MAP_W, MAP_H,
+  transportQuote, generateMap, resourceCounts, MAP_W, MAP_H,
 } = require('../src/game');
 
 function newGame(startCash = 1000, duration = 600) {
@@ -21,16 +21,39 @@ function run(game, seconds) {
 
 /* ---------------- 맵 생성 ---------------- */
 {
-  const map = generateMap();
+  const tally = (map) => {
+    const counts = {};
+    for (const t of map.tiles) counts[t.t] = (counts[t.t] || 0) + 1;
+    return counts;
+  };
+
+  const map = generateMap(2);
   assert.strictEqual(map.tiles.length, MAP_W * MAP_H);
   assert.strictEqual(map.cities.length, 4);
   for (const c of map.cities) {
     assert.strictEqual(map.tiles[c.y * MAP_W + c.x].t, 'city');
   }
-  const counts = {};
-  for (const t of map.tiles) counts[t.t] = (counts[t.t] || 0) + 1;
-  assert.ok(counts.iron >= 8 && counts.oil >= 6 && counts.farm >= 10, '자원 타일이 충분해야 한다');
-  console.log('✓ 맵 생성');
+
+  // 요청한 개수가 정확히 깔려야 한다 (빈 자리를 못 찾고 헛돌면 안 된다)
+  for (const n of [2, 4, 6]) {
+    const m = generateMap(n);
+    const counts = tally(m);
+    const want = resourceCounts(n);
+    for (const [type, expected] of Object.entries(want)) {
+      assert.strictEqual(counts[type], expected, `${n}인 맵의 ${type} 타일이 ${expected}개여야 한다`);
+    }
+    assert.ok(counts.plain > 40, `공장 지을 평지가 넉넉해야 한다 (${counts.plain}칸)`);
+  }
+
+  // 인원이 늘면 자원도 늘어난다
+  const c2 = resourceCounts(2);
+  const c6 = resourceCounts(6);
+  for (const type of ['iron', 'oil', 'farm']) {
+    assert.ok(c6[type] > c2[type], `${type} 타일은 인원이 많을수록 늘어야 한다`);
+  }
+  // 기계 생산(철2:유1)에 맞게 광산 자리가 유전보다 넉넉하다
+  assert.ok(c2.iron > c2.oil && c6.iron > c6.oil);
+  console.log(`✓ 맵 생성 (2인 철${c2.iron}/유${c2.oil}/농${c2.farm} → 6인 철${c6.iron}/유${c6.oil}/농${c6.farm})`);
 }
 
 /* ---------------- 운송 수단 선택 ---------------- */

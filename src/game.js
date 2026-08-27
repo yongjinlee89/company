@@ -95,7 +95,25 @@ function randInt(n) {
   return Math.floor(Math.random() * n);
 }
 
-function generateMap() {
+/**
+ * 인원수에 맞춘 자원 타일 개수.
+ * 사람이 많을수록 늘려서, 2인 게임이 텅 비어 보이지도 않고
+ * 6인 게임이 땅따먹기 싸움만 되지도 않게 한다.
+ */
+function resourceCounts(playerCount) {
+  const extra = Math.max(0, playerCount - 2);
+  return {
+    iron: 12 + 3 * extra, // 철광 지대
+    oil: 8 + 2 * extra, // 유전 지대
+    farm: 14 + 3 * extra, // 농지
+    mountain: 10, // 산 (지을 수 없는 장애물)
+  };
+}
+
+/**
+ * @param {number} playerCount 참가 인원 (자원 타일 개수를 정한다)
+ */
+function generateMap(playerCount = 2) {
   const tiles = new Array(MAP_W * MAP_H)
     .fill(null)
     .map(() => ({ t: 'plain', owner: null, b: null, mode: null, route: null }));
@@ -126,22 +144,29 @@ function generateMap() {
     });
   });
 
-  // 자원/산 배치
+  // 자원/산 배치.
+  // 남은 평지를 섞어서 앞에서부터 꺼내 쓴다 — 무작위로 찍어 보는 방식은
+  // 자원이 많아질수록 빈 자리를 못 찾고 헛돌 수 있다.
+  const pool = [];
+  for (let i = 0; i < tiles.length; i++) {
+    if (tiles[i].t === 'plain') pool.push(i);
+  }
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = randInt(i + 1);
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+
+  let cursor = 0;
   const scatter = (type, count) => {
-    let placed = 0;
-    let guard = 0;
-    while (placed < count && guard++ < 2000) {
-      const idx = randInt(tiles.length);
-      if (tiles[idx].t === 'plain') {
-        tiles[idx].t = type;
-        placed++;
-      }
+    for (let n = 0; n < count && cursor < pool.length; n++) {
+      tiles[pool[cursor++]].t = type;
     }
   };
-  scatter('mountain', 12);
-  scatter('iron', 10);
-  scatter('oil', 8);
-  scatter('farm', 12);
+  const counts = resourceCounts(playerCount);
+  scatter('mountain', counts.mountain);
+  scatter('iron', counts.iron);
+  scatter('oil', counts.oil);
+  scatter('farm', counts.farm);
 
   return { w: MAP_W, h: MAP_H, tiles, cities };
 }
@@ -159,7 +184,7 @@ class Game {
     this.ended = false;
     this.ranking = null;
 
-    const map = generateMap();
+    const map = generateMap(playerInfos.length);
     this.map = { w: map.w, h: map.h, tiles: map.tiles };
     this.cities = map.cities;
 
@@ -692,6 +717,7 @@ module.exports = {
   transportQuote,
   chebyshev,
   generateMap,
+  resourceCounts,
   MAP_W,
   MAP_H,
 };
