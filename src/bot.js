@@ -251,19 +251,21 @@ function playStocks(game, me) {
     }
   }
 
-  // 본업에 쓸 돈은 남겨 두고, 저평가된 회사를 사 모은다
+  // 본업에 쓸 돈은 남겨 두고, 저평가된 회사를 사 모은다.
+  // 물량은 시장에 남은 것뿐 아니라 외부 투자자가 들고 있는 것도 사 올 수 있다.
   if (me.cash < 800) return;
   let best = null;
   for (const p of game.players) {
     if (p.id === me.id) continue;
+    const avail = game.availableShares(p.id);
+    if (avail < 1) continue;
     const s = game.stocks[p.id];
-    if (s.float < 1) continue;
     const fair = game.netWorth(p) / TOTAL_SHARES;
     const value = fair / s.price; // 1보다 크면 저평가
-    if (value > 1.05 && (!best || value > best.value)) best = { id: p.id, value, s };
+    if (value > 1.05 && (!best || value > best.value)) best = { id: p.id, value, s, avail };
   }
   if (!best) return;
-  const qty = Math.min(best.s.float, Math.floor((me.cash - 500) / (best.s.price * 1.1)), 12);
+  const qty = Math.min(best.avail, Math.floor((me.cash - 500) / (best.s.price * 1.1)), 12);
   if (qty > 0) game.stockTrade(me.id, { company: best.id, qty, side: 'buy' });
 }
 
