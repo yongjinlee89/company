@@ -5,6 +5,7 @@
 const assert = require('assert');
 const {
   Game, TILE_TYPES, BUILDINGS, MAX_SHORT, LOAN_INTEREST, LOAN_MIN_LIMIT, RESALE_RATE,
+  TAKEOVER_SHARES, AUTO_BUY_RATE, AUTO_BUY_RESERVE,
 } = require('../src/game');
 
 function newGame(startCash = 5000, duration = 600) {
@@ -193,16 +194,74 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
 
 /* ---------------- 주식 물량 (외부 투자자가 있어도 인수 가능) ---------------- */
 {
-  const g = newGame(100000);
-  // 외부 투자자가 물량을 사가도, 사람은 그들에게서 되사 올 수 있어야 한다
+  const g = newGame(1000000);
+  // 외부 투자자가 물량을 대부분 사가도, 사람은 그들에게서 되사 올 수 있어야 한다
+  const total = g.stocks.b.float;
   g.stocks.b.float = 5;
-  g.stocks.b.npc = 55;
-  assert.strictEqual(g.availableShares('b'), 60);
-  assert.ok(g.stockTrade('a', { company: 'b', qty: 51, side: 'buy' }).ok, '외부 투자자에게서도 살 수 있다');
-  assert.strictEqual(g.player('a').shares.b, 51);
-  assert.strictEqual(g.controllerOf('b').id, 'a', '경영권 인수가 여전히 가능하다');
-  assert.strictEqual(g.stocks.b.float + g.stocks.b.npc, 9, '물량 회계가 맞는다');
+  g.stocks.b.npc = total - 5;
+  assert.strictEqual(g.availableShares('b'), total);
+
+  assert.ok(
+    g.stockTrade('a', { company: 'b', qty: TAKEOVER_SHARES, side: 'buy' }).ok,
+    '외부 투자자에게서도 살 수 있다'
+  );
+  assert.strictEqual(g.player('a').shares.b, TAKEOVER_SHARES);
+  assert.ok(g.controllerOf('b'), '경영권 인수가 여전히 가능하다');
+  assert.strictEqual(g.controllerOf('b').id, 'a');
+  assert.strictEqual(g.stocks.b.float + g.stocks.b.npc, total - TAKEOVER_SHARES, '물량 회계가 맞는다');
+  assert.ok(g.stocks.b.npc >= 0 && g.stocks.b.float >= 0, '물량이 음수가 되지 않는다');
   console.log('✓ 주식 물량 회계 (외부 투자자 보유분도 매수 가능)');
+}
+
+/* ---------------- 자재 수량 유지 (자동 매수) ---------------- */
+{
+  const g = newGame(50000);
+  const a = g.player('a');
+
+  assert.ok(!g.setAutoBuy('a', 'nope', 10).ok, '없는 자재는 거부');
+  assert.ok(!g.setAutoBuy('a', 'iron', -1).ok, '음수는 거부');
+  assert.ok(g.setAutoBuy('a', 'iron', 60).ok);
+  assert.strictEqual(a.autoBuy.iron, 60);
+
+  // 1초마다 조금씩 채워 넣는다 (한 번에 몰아사서 시세를 밀어올리지 않게)
+  run(g, 1.1);
+  assert.ok(a.inv.iron > 0, '모자라면 알아서 사 온다');
+  assert.ok(a.inv.iron <= AUTO_BUY_RATE + 0.01, `1초에 ${AUTO_BUY_RATE}개까지만 산다 (실제 ${a.inv.iron})`);
+
+  // 목표치까지 채우면 멈춘다
+  run(g, 10);
+  assert.ok(Math.abs(a.inv.iron - 60) < 1.01, `목표 60 근처에서 멈춘다 (실제 ${a.inv.iron})`);
+  const settled = a.inv.iron;
+  const cash = a.cash;
+  run(g, 5);
+  assert.ok(Math.abs(a.inv.iron - settled) < 0.01, '목표에 도달하면 더 사지 않는다');
+  assert.strictEqual(a.cash, cash, '돈도 더 쓰지 않는다');
+
+  // 공장이 재료를 쓰면 다시 채워 준다 — 이게 이 기능의 목적
+  const idx = findTile(g, 'plain');
+  g.buyTile('a', idx);
+  g.build('a', idx, 'factory');
+  g.setAutoBuy('a', 'oil', 40);
+  run(g, 30);
+  const tile = g.map.tiles[idx];
+  assert.ok(!tile.idle, '공장이 재료 부족으로 멈추지 않는다');
+  assert.ok(a.inv.iron > 30 && a.inv.oil > 20, '소비되는 재료가 계속 채워진다');
+
+  // 끄면 더 이상 사지 않는다
+  assert.ok(g.setAutoBuy('a', 'iron', 0).ok);
+  a.inv.iron = 0;
+  run(g, 3);
+  assert.ok(a.inv.iron < 1, '0으로 두면 자동 매수가 꺼진다');
+
+  // 현금이 말라도 운영자금은 남긴다 (자동 매수가 회사를 빈털터리로 만들지 않게)
+  const g2 = newGame(50000);
+  const b2 = g2.player('a');
+  g2.setAutoBuy('a', 'grain', 5000);
+  b2.cash = 2000;
+  run(g2, 40);
+  assert.ok(b2.cash >= AUTO_BUY_RESERVE - 40, `운영자금을 남긴다 (남은 현금 ${Math.round(b2.cash)})`);
+  assert.ok(b2.inv.grain > 50, '그래도 살 수 있는 만큼은 사 온다');
+  console.log(`✓ 자재 수량 유지 (초당 ${AUTO_BUY_RATE}개까지 자동 매수)`);
 }
 
 /* ---------------- 주가가 오르내린다 ---------------- */

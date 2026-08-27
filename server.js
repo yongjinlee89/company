@@ -120,6 +120,7 @@ io.on('connection', (socket) => {
   socket.on('setRoute', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.setRoute(pid, p.idx, p.city))));
   socket.on('upgradeFactory', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.upgradeFactory(pid, p.idx))));
   socket.on('trade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.trade(pid, p))));
+  socket.on('setAutoBuy', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.setAutoBuy(pid, p.mat, p.target))));
   socket.on('stockTrade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.stockTrade(pid, p))));
 
   // 자산 매각 / 부동산

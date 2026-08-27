@@ -224,12 +224,14 @@ function buyInputs(game, me) {
  * 사람이 주식을 아예 안 만져도 컴퓨터끼리 사고팔아 주가가 움직인다.
  */
 function playStocks(game, me) {
-  const DEFEND_FROM = TAKEOVER_SHARES - 15; // 36주부터 위협으로 본다
+  // 총주식수가 바뀌어도 따라가도록 비율로 잡는다
+  const DEFEND_FROM = Math.round(TAKEOVER_SHARES * 0.8); // 인수까지 20% 남으면 방어 시작
+  const LOT = Math.max(1, Math.round(TOTAL_SHARES / 10)); // 한 번에 거래하는 단위
   const myStock = game.stocks[me.id];
 
   const threat = game.players.some((p) => p.id !== me.id && (p.shares[me.id] || 0) >= DEFEND_FROM);
   if (threat && myStock.float > 0 && me.cash > 200) {
-    const qty = Math.min(myStock.float, Math.floor((me.cash - 150) / (myStock.price * 1.05)), 10);
+    const qty = Math.min(myStock.float, Math.floor((me.cash - 150) / (myStock.price * 1.05)), LOT);
     if (qty > 0) {
       game.stockTrade(me.id, { company: me.id, qty, side: 'buy' });
       return;
@@ -246,7 +248,7 @@ function playStocks(game, me) {
     // 경영권을 쥐고 있으면 팔지 않는다 (그 자체로 돈이 들어온다)
     if (game.controllerOf(cid) && game.controllerOf(cid).id === me.id) continue;
     if (s.price > fair * 1.25) {
-      game.stockTrade(me.id, { company: cid, qty: Math.min(n, 10), side: 'sell' });
+      game.stockTrade(me.id, { company: cid, qty: Math.min(n, LOT), side: 'sell' });
       return;
     }
   }
@@ -265,7 +267,7 @@ function playStocks(game, me) {
     if (value > 1.05 && (!best || value > best.value)) best = { id: p.id, value, s, avail };
   }
   if (!best) return;
-  const qty = Math.min(best.avail, Math.floor((me.cash - 500) / (best.s.price * 1.1)), 12);
+  const qty = Math.min(best.avail, Math.floor((me.cash - 500) / (best.s.price * 1.1)), LOT);
   if (qty > 0) game.stockTrade(me.id, { company: best.id, qty, side: 'buy' });
 }
 

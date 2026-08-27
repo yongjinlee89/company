@@ -26,6 +26,9 @@ const el = (tag, cls, text) => {
 const fmt = (n) => Math.round(n).toLocaleString('ko-KR');
 /** 재고처럼 잘게 쌓이는 값은 소수 한 자리까지 */
 const fmt1 = (n) => (Math.round(n * 10) / 10).toLocaleString('ko-KR', { maximumFractionDigits: 1 });
+/** 주가처럼 작은 값은 두 자리까지 (총주식수가 많아 주당 가격이 작다) */
+const fmt2 = (n) =>
+  (Math.round(n * 100) / 100).toLocaleString('ko-KR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const mmss = (sec) => {
   const s = Math.max(0, Math.round(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -101,10 +104,12 @@ socket.on('state', (st) => {
   const prevPhase = S ? S.phase : null;
   S = st;
   if (prevPhase !== st.phase) {
-    // 새 게임이 시작되면 화면 조각을 모두 새로 만든다
+    // 새 게임이 시작되면 화면 조각과 주가 기록을 모두 새로 만든다
     resultDismissed = false;
     for (const k of Object.keys(panes)) delete panes[k];
+    for (const k of Object.keys(priceHistory)) delete priceHistory[k];
   }
+  samplePrices();
   render();
 });
 
@@ -305,11 +310,20 @@ const TILE_COLORS = {
 const TILE_ICONS = { iron: '⛏️', oil: '🛢️', farm: '🌱', mountain: '⛰️', city: '🏙️' };
 const BUILDING_ICONS = { mine: '⚒️', rig: '🏗️', farm: '🚜', factory: '🏭' };
 
+/**
+ * 맵이 화면을 다 먹지 않도록 남는 공간의 80% 만 쓴다 (나머지는 메뉴 몫).
+ * 다만 가로로 돌린 휴대폰처럼 세로가 짧을 때는 줄일 여유가 없으므로 거의 다 쓴다.
+ */
+const COMPACT = '(orientation: landscape) and (max-height: 560px)';
+function mapScale() {
+  return window.matchMedia && window.matchMedia(COMPACT).matches ? 0.98 : 0.8;
+}
+
 function drawMap() {
   const g = S.game;
   const canvas = $('#map');
   const wrap = $('#map-wrap');
-  const size = Math.min(wrap.clientWidth, wrap.clientHeight) || 480;
+  const size = (Math.min(wrap.clientWidth, wrap.clientHeight) || 480) * mapScale();
   const dpr = window.devicePixelRatio || 1;
   canvas.width = size * dpr;
   canvas.height = size * dpr;
@@ -640,7 +654,9 @@ function buildTilePanel(panel, tile, live) {
         .join('+');
       // 0.18 과 0.22 가 똑같이 "0.2" 로 보이지 않도록 두 자리까지 쓴다
       const rate = Math.round(p.rate * level * 100) / 100;
-      const btn = el('button', 'chip' + (mode === key ? ' on' : ''), `${p.name} ${rate}/초 (${recipe})`);
+      // 재료는 툴팁으로 뺀다 — 한 줄에 들어가야 패널이 두꺼워지지 않는다
+      const btn = el('button', 'chip' + (mode === key ? ' on' : ''), `${p.name} ${rate}/초`);
+      btn.title = `재료 ${recipe}`;
       btn.addEventListener('click', () => emit('setFactoryMode', { idx: selectedTile, mode: key }));
       modeRow.appendChild(btn);
     }
@@ -648,7 +664,7 @@ function buildTilePanel(panel, tile, live) {
 
     if (level < fSpec.maxLevel) {
       const cost = fSpec.upgradeCost * level;
-      costButton(`⬆️ ${level + 1}단계로 증설 (${cost}) — 생산량 ${level + 1}배`, cost, () =>
+      costButton(`⬆️ ${level + 1}단계 증설 (${cost}) · 생산 ${level + 1}배`, cost, () =>
         emit('upgradeFactory', { idx: selectedTile })
       );
     }
@@ -661,7 +677,7 @@ function buildTilePanel(panel, tile, live) {
     });
 
     // 배송 노선 — 도시별 초당 순이익 (수요에 따라 계속 변한다)
-    panel.appendChild(el('div', 'tp-row', '🚚 배송 노선 (초당 순이익)'));
+    panel.appendChild(el('div', 'tp-row', '🚚 배송 노선 · 초당 순이익'));
     const rows = [];
     g.cities.forEach((c, ci) => {
       const row = el('button', 'route-row' + (tile.route === ci ? ' on' : ''));
@@ -697,24 +713,29 @@ function buildTilePanel(panel, tile, live) {
     });
   }
 
-  // 내 땅이면 팔 수 있다 — 은행에 넘기거나, 부동산 매물로 내놓거나
+  // 내 땅이면 팔 수 있다 — 자주 쓰는 기능이 아니므로 접어 둔다
   if (tile.owner === ME) {
-    panel.appendChild(el('hr', 'tp-sep'));
     const value = tileValue(selectedTile);
-    const sell = el('button', 'wide danger', `💰 매각 (${fmt(value)})`);
+    const box = document.createElement('details');
+    box.className = 'tp-fold';
+    const sum = document.createElement('summary');
+    sum.textContent = tile.listPrice ? `💰 매각 · 🏠 ${fmt(tile.listPrice)} 매물 중` : `💰 매각 · 부동산`;
+    box.appendChild(sum);
+
+    const sell = el('button', 'wide danger', `은행에 매각 (${fmt(value)})`);
     sell.addEventListener('click', () => {
       emit('sellTile', { idx: selectedTile });
       selectedTile = null;
     });
-    panel.appendChild(sell);
+    box.appendChild(sell);
 
-    const listRow = el('div', 'ship-form');
+    const listRow = el('div', 'tp-inline');
     const price = el('input');
     price.type = 'number';
     price.min = '1';
     price.placeholder = '희망가';
     keepInput(price, 'list-price');
-    const listBtn = el('button', '', tile.listPrice ? '매물 내리기' : '🏠 매물로 내놓기');
+    const listBtn = el('button', '', tile.listPrice ? '내리기' : '🏠 내놓기');
     listBtn.addEventListener('click', () => {
       if (tile.listPrice) {
         emit('unlistTile', { idx: selectedTile });
@@ -726,13 +747,8 @@ function buildTilePanel(panel, tile, live) {
     });
     listRow.appendChild(price);
     listRow.appendChild(listBtn);
-    panel.appendChild(listRow);
-
-    if (tile.listPrice) {
-      panel.appendChild(el('div', 'tp-row small listed', `🏠 ${fmt(tile.listPrice)}에 매물로 나와 있습니다`));
-    } else {
-      panel.appendChild(el('div', 'tp-row small', '매물로 내놓으면 다른 회사가 그 값에 사 갈 수 있습니다.'));
-    }
+    box.appendChild(listRow);
+    panel.appendChild(box);
   }
 }
 
@@ -786,11 +802,13 @@ function renderMarket() {
       const info = el('div', 'trade-info');
       info.appendChild(el('b', '', nameOf(key)));
       const price = el('span', '');
-      const base = el('span', 'small', ` (기준 ${g.market[key].base})`);
+      const base = el('span', 'small', '');
       const held = el('span', 'small', '');
+      const spark = makeSpark('최근 1분 시세');
       info.appendChild(price);
       info.appendChild(base);
       info.appendChild(held);
+      info.appendChild(spark);
       row.appendChild(info);
 
       live.push(() => {
@@ -798,8 +816,12 @@ function renderMarket() {
         const diff = m.price - m.base;
         price.textContent = ` ${fmt1(m.price)}`;
         price.className = diff > 0.01 ? 'up' : diff < -0.01 ? 'down' : '';
+        // 사건 중에는 기준가 자체가 흔들리므로 매번 다시 쓴다
+        base.textContent = ` (기준 ${fmt1(m.base)})`;
+        base.classList.toggle('event-base', Math.abs(m.base - m.baseline) > 0.01);
         const p = me();
         held.textContent = p ? ` · 보유 ${fmt1(p.inv[key] || 0)}` : '';
+        drawSpark(spark, priceHistory['mat:' + key]);
       });
 
       if (my && !g.ended) {
@@ -816,7 +838,29 @@ function renderMarket() {
         controls.appendChild(qty);
         controls.appendChild(buy);
         controls.appendChild(sell);
+
+        // 수량 유지 — 공장이 재료 없이 멈추지 않게 모자라면 알아서 사 온다
+        const keepBox = el('span', 'auto-buy');
+        keepBox.appendChild(el('span', 'small', '유지'));
+        const target = el('input');
+        target.type = 'number';
+        target.min = '0';
+        target.placeholder = '0';
+        target.title = '이 수량보다 적으면 매 초 자동으로 사 옵니다. 운영자금은 남겨 둡니다. (0이면 끔)';
+        target.addEventListener('change', () =>
+          emit('setAutoBuy', { mat: key, target: Math.max(0, Math.floor(Number(target.value) || 0)) })
+        );
+        keepBox.appendChild(target);
+        controls.appendChild(keepBox);
         row.appendChild(controls);
+
+        live.push(() => {
+          const p = me();
+          const t = p && p.autoBuy ? p.autoBuy[key] || 0 : 0;
+          // 입력 중에는 건드리지 않는다
+          if (document.activeElement !== target) target.value = t ? String(t) : '';
+          keepBox.classList.toggle('on', t > 0);
+        });
       }
       box.appendChild(row);
     }
@@ -842,6 +886,83 @@ function renderMarket() {
   });
 }
 
+/* ---------- 주가 미니 차트 ---------- */
+
+// 서버가 0.5초마다 보내주는 시세를 1초에 하나씩 모아 스파크라인으로 그린다.
+// 서버가 기록을 따로 보내주지 않아도 되므로 트래픽이 늘지 않는다.
+// 키는 'stock:<회사id>' 와 'mat:<자재>' 로 구분한다.
+const priceHistory = {};
+const HISTORY_LEN = 60; // 최근 1분
+let lastSampleAt = 0;
+
+function pushSample(key, value) {
+  const arr = priceHistory[key] || (priceHistory[key] = []);
+  arr.push(value);
+  if (arr.length > HISTORY_LEN) arr.shift();
+}
+
+function samplePrices() {
+  if (!S || !S.game || S.game.ended) return;
+  const now = Date.now();
+  if (now - lastSampleAt < 900) return;
+  lastSampleAt = now;
+  for (const p of S.game.players) {
+    const s = S.game.stocks[p.id];
+    if (s) pushSample('stock:' + p.id, s.price);
+  }
+  for (const [key, m] of Object.entries(S.game.market)) {
+    pushSample('mat:' + key, m.price);
+  }
+}
+
+/** 시세 차트용 캔버스를 만든다 */
+function makeSpark(title) {
+  const c = document.createElement('canvas');
+  c.className = 'spark';
+  c.title = title;
+  return c;
+}
+
+function drawSpark(canvas, data) {
+  const w = canvas.clientWidth || 72;
+  const h = canvas.clientHeight || 20;
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(w * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!data || data.length < 2) return;
+
+  let lo = Math.min(...data);
+  let hi = Math.max(...data);
+  if (hi - lo < 1e-6) {
+    lo -= 1;
+    hi += 1;
+  }
+  const px = (i) => 1 + (i / (data.length - 1)) * (w - 2);
+  const py = (v) => h - 2 - ((v - lo) / (hi - lo)) * (h - 4);
+  const rising = data[data.length - 1] >= data[0];
+  const color = rising ? '#4ade80' : '#ff8080';
+
+  // 옅은 면 + 선
+  ctx.beginPath();
+  ctx.moveTo(px(0), h);
+  data.forEach((v, i) => ctx.lineTo(px(i), py(v)));
+  ctx.lineTo(px(data.length - 1), h);
+  ctx.closePath();
+  ctx.fillStyle = rising ? 'rgba(74,222,128,0.15)' : 'rgba(255,128,128,0.15)';
+  ctx.fill();
+
+  ctx.beginPath();
+  data.forEach((v, i) => (i ? ctx.lineTo(px(i), py(v)) : ctx.moveTo(px(i), py(v))));
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+}
+
 /* ---------- 주식 ---------- */
 
 function renderStocks() {
@@ -861,69 +982,95 @@ function renderStocks() {
       )
     );
 
+    // 한 회사당 두 줄(요약 + 거래)로 눌러 담는다. 회사가 6개까지 늘어나므로
+    // 줄 수를 줄이지 않으면 스크롤이 너무 길어진다.
     for (const p of g.players) {
       const row = el('div', 'stock-row');
+
+      // 1줄: ● 이름 · 주가 · 물량 · 경영권
       const head = el('div', 'trade-info');
       const dot = el('span', 'dot');
       dot.style.background = p.color;
       head.appendChild(dot);
       head.appendChild(el('b', '', labelOf(p)));
-      const price = el('span', '');
-      const float = el('span', 'small', '');
+      const price = el('span', 'stock-price');
+      const float = el('span', 'small');
+      const takeover = el('span', 'takeover hidden');
+      const spark = makeSpark('최근 1분 주가');
       head.appendChild(price);
       head.appendChild(float);
+      head.appendChild(takeover);
+      head.appendChild(spark);
       row.appendChild(head);
 
-      const div = el('div', 'small dividend');
-      row.appendChild(div);
-      const holders = el('div', 'small holders');
-      row.appendChild(holders);
-      const takeover = el('div', 'takeover hidden');
-      row.appendChild(takeover);
+      // 2줄: 내 배당 · 보유자 (공매도 잔고가 있으면 뒤에 붙는다)
+      const meta = el('div', 'small stock-meta');
+      const div = el('span', 'dividend');
+      const holders = el('span', 'holders');
+      const shortInfo = el('span', 'short-row hidden');
+      meta.appendChild(div);
+      meta.appendChild(holders);
+      meta.appendChild(shortInfo);
+      row.appendChild(meta);
 
       live.push(() => {
         const gg = S.game;
         const s = gg.stocks[p.id];
         const now = gg.players.find((x) => x.id === p.id);
         const y = gg.constants.dividendYield;
-        price.textContent = ` ${fmt1(s.price)}/주`;
-        float.textContent = ` 살 수 있는 물량 ${s.float + s.npc}주`;
+        const mine = me();
+        price.textContent = `${fmt2(s.price)}/주`;
+        float.textContent = `물량 ${fmt(s.float + s.npc)}주`;
+        drawSpark(spark, priceHistory['stock:' + p.id]);
 
         // 이 회사 주식에서 내가 받는 배당 / 내 회사가 물고 있는 배당
-        const mine = me();
         if (p.id === ME) {
           let out = 0;
           for (const h of gg.players) {
             if (h.id !== ME) out += h.shares[ME] || 0;
           }
-          div.textContent = out > 0 ? `내가 내는 배당 -${fmt1(s.price * out * y)}/초` : '나가는 배당 없음';
+          div.textContent = out > 0 ? `배당 -${fmt1(s.price * out * y)}/초` : '배당 없음';
           div.classList.toggle('down', out > 0);
           div.classList.remove('up');
         } else {
           const n = mine ? mine.shares[p.id] || 0 : 0;
-          div.textContent = n > 0 ? `내 배당 +${fmt1(s.price * n * y)}/초 (${n}주)` : '보유 없음';
+          div.textContent = n > 0 ? `내 ${n}주 배당 +${fmt1(s.price * n * y)}/초` : '보유 없음';
           div.classList.toggle('up', n > 0);
           div.classList.remove('down');
         }
 
-        const parts = [];
-        for (const holder of gg.players) {
-          const n = holder.shares[p.id] || 0;
-          if (n > 0) parts.push(`${holder.name} ${n}주`);
-        }
-        holders.textContent = parts.join(' · ') || '보유자 없음';
+        // 6인이면 보유자 목록이 줄바꿈되어 칸이 두꺼워진다.
+        // 인수 위협을 알아보는 게 목적이므로 지분 큰 순으로 셋만 보여준다.
+        const owners = gg.players
+          .map((h) => ({ name: h.name, n: h.shares[p.id] || 0 }))
+          .filter((h) => h.n > 0)
+          .sort((x, y) => y.n - x.n);
+        const shown = owners.slice(0, 3).map((h) => `${h.name} ${h.n}`);
+        if (owners.length > 3) shown.push(`외 ${owners.length - 3}`);
+        holders.textContent = shown.length ? '· ' + shown.join(', ') : '';
+        // 좁은 화면에서는 말줄임되므로 전체 목록은 툴팁으로 남겨 둔다
+        holders.title = owners.map((h) => `${h.name} ${h.n}주`).join(' · ');
+
         const ctrlId = now && now.controller;
         takeover.classList.toggle('hidden', !ctrlId);
         if (ctrlId) {
           const ctrl = gg.players.find((x) => x.id === ctrlId);
-          takeover.textContent = `⚡ ${ctrl ? ctrl.name : '?'} 님이 경영권 보유 중`;
+          takeover.textContent = `⚡${ctrl ? ctrl.name : '?'}`;
+        }
+
+        const pos = mine && mine.shorts ? mine.shorts[p.id] : null;
+        if (!pos || !pos.shares) {
+          shortInfo.classList.add('hidden');
+        } else {
+          const pnl = (pos.avg - s.price) * pos.shares;
+          shortInfo.classList.remove('hidden');
+          shortInfo.textContent = ` · 📉공매도 ${fmt(pos.shares)}주 ${pnl >= 0 ? '+' : ''}${fmt(pnl)}`;
+          shortInfo.classList.toggle('up', pnl >= 0);
+          shortInfo.classList.toggle('down', pnl < 0);
         }
       });
 
-      // 공매도 잔고 (있을 때만 보인다)
-      const shortRow = el('div', 'small short-row hidden');
-      row.appendChild(shortRow);
-
+      // 3줄: 거래 버튼
       if (my && !g.ended) {
         const controls = el('div', 'trade-controls');
         const qty = el('input');
@@ -931,14 +1078,11 @@ function renderStocks() {
         qty.min = '1';
         qty.placeholder = '주';
         keepInput(qty, 'stk-' + p.id);
+        const amount = () => keptValue('stk-' + p.id, 1);
         const buy = el('button', 'buy', '매수');
         const sell = el('button', 'sell', '매도');
-        buy.addEventListener('click', () =>
-          emit('stockTrade', { company: p.id, qty: keptValue('stk-' + p.id, 1), side: 'buy' })
-        );
-        sell.addEventListener('click', () =>
-          emit('stockTrade', { company: p.id, qty: keptValue('stk-' + p.id, 1), side: 'sell' })
-        );
+        buy.addEventListener('click', () => emit('stockTrade', { company: p.id, qty: amount(), side: 'buy' }));
+        sell.addEventListener('click', () => emit('stockTrade', { company: p.id, qty: amount(), side: 'sell' }));
         controls.appendChild(qty);
         controls.appendChild(buy);
         controls.appendChild(sell);
@@ -949,35 +1093,14 @@ function renderStocks() {
           const coverBtn = el('button', 'cover', '환매');
           shortBtn.title = '주식을 빌려 미리 판다. 주가가 내려가면 싸게 되사서 차익을 남긴다.';
           coverBtn.title = '빌린 주식을 되사서 갚는다.';
-          shortBtn.addEventListener('click', () =>
-            emit('shortSell', { company: p.id, qty: keptValue('stk-' + p.id, 1) })
-          );
-          coverBtn.addEventListener('click', () =>
-            emit('coverShort', { company: p.id, qty: keptValue('stk-' + p.id, 1) })
-          );
+          shortBtn.addEventListener('click', () => emit('shortSell', { company: p.id, qty: amount() }));
+          coverBtn.addEventListener('click', () => emit('coverShort', { company: p.id, qty: amount() }));
           controls.appendChild(shortBtn);
           controls.appendChild(coverBtn);
         }
         row.appendChild(controls);
       }
       box.appendChild(row);
-
-      live.push(() => {
-        const my2 = me();
-        const pos = my2 && my2.shorts ? my2.shorts[p.id] : null;
-        if (!pos || !pos.shares) {
-          shortRow.classList.add('hidden');
-          return;
-        }
-        const cur = S.game.stocks[p.id].price;
-        const pnl = (pos.avg - cur) * pos.shares;
-        shortRow.classList.remove('hidden');
-        shortRow.textContent =
-          `📉 공매도 ${pos.shares}주 · 평균 ${fmt1(pos.avg)} → 현재 ${fmt1(cur)} · ` +
-          `평가손익 ${pnl >= 0 ? '+' : ''}${fmt(pnl)}`;
-        shortRow.classList.toggle('up', pnl >= 0);
-        shortRow.classList.toggle('down', pnl < 0);
-      });
     }
   });
 }
@@ -992,39 +1115,65 @@ function renderCompany() {
     const box = $('#tab-company');
     box.innerHTML = '';
 
-    // 대출 — 초반에 설비를 깔 돈이 모자랄 때 쓴다
+    // 대출 — 초반에 설비를 깔 돈이 모자랄 때 쓴다. 금액은 100단위 버튼으로 고른다.
     if (me() && !g.ended) {
       const card = el('div', 'company-card loan-card');
       card.appendChild(el('b', '', '🏦 대출'));
       const info = el('div', 'small');
       card.appendChild(info);
-      const form = el('div', 'ship-form');
-      const amount = el('input');
-      amount.type = 'number';
-      amount.min = '1';
-      amount.placeholder = '금액';
-      keepInput(amount, 'loan-amt');
-      const borrow = el('button', 'buy', '대출');
-      const repay = el('button', 'sell', '상환');
-      borrow.addEventListener('click', () => emit('borrow', { amount: keptValue('loan-amt', 0) }));
-      repay.addEventListener('click', () => emit('repay', { amount: keptValue('loan-amt', 0) }));
-      form.appendChild(amount);
-      form.appendChild(borrow);
-      form.appendChild(repay);
-      card.appendChild(form);
+
+      const borrowRow = el('div', 'loan-row');
+      borrowRow.appendChild(el('span', 'small loan-label', '대출'));
+      const borrowBtns = [100, 500, 1000].map((amt) => {
+        const b = el('button', 'buy', `+${fmt(amt)}`);
+        b.addEventListener('click', () => emit('borrow', { amount: amt }));
+        borrowRow.appendChild(b);
+        return { b, amt };
+      });
+      const maxBtn = el('button', 'buy', '최대');
+      maxBtn.addEventListener('click', () => {
+        const my = me();
+        // 100단위로 내림해서 빌린다
+        const amt = my ? Math.floor(my.credit / 100) * 100 : 0;
+        if (amt < 100) return toast('빌릴 수 있는 금액이 100 미만입니다.');
+        emit('borrow', { amount: amt });
+      });
+      borrowRow.appendChild(maxBtn);
+      card.appendChild(borrowRow);
+
+      const repayRow = el('div', 'loan-row');
+      repayRow.appendChild(el('span', 'small loan-label', '상환'));
+      const repayBtns = [100, 500, 1000].map((amt) => {
+        const b = el('button', 'sell', `-${fmt(amt)}`);
+        b.addEventListener('click', () => emit('repay', { amount: amt }));
+        repayRow.appendChild(b);
+        return { b, amt };
+      });
+      const allBtn = el('button', 'sell', '전액');
+      allBtn.addEventListener('click', () => {
+        const my = me();
+        if (!my || my.debt < 1) return toast('갚을 빚이 없습니다.');
+        emit('repay', { amount: Math.ceil(my.debt) });
+      });
+      repayRow.appendChild(allBtn);
+      card.appendChild(repayRow);
       box.appendChild(card);
 
       live.push(() => {
         const my = me();
         if (!my) return;
-        const rate = Math.round(S.game.constants.loanInterest * 10000) / 100;
+        const C = S.game.constants;
+        const rate = Math.round(C.loanInterest * 10000) / 100;
         info.innerHTML = '';
+        info.appendChild(el('span', my.debt > 0 ? 'down' : '', `빚 ${fmt(my.debt)}`));
         info.appendChild(
-          el('span', my.debt > 0 ? 'down' : '', `빚 ${fmt(my.debt)}`)
+          el('span', '', ` · 이자 ${rate}%/초 (-${fmt1(my.debt * C.loanInterest)}/초) · 한도 ${fmt(my.credit)}`)
         );
-        info.appendChild(
-          el('span', '', ` · 이자 ${rate}%/초 (-${fmt1(my.debt * S.game.constants.loanInterest)}/초) · 한도 ${fmt(my.credit)}`)
-        );
+        // 한도·현금·빚에 따라 못 누르는 버튼은 잠근다
+        for (const { b, amt } of borrowBtns) b.disabled = my.credit < amt;
+        maxBtn.disabled = my.credit < 100;
+        for (const { b, amt } of repayBtns) b.disabled = my.debt < 1 || my.cash < amt;
+        allBtn.disabled = my.debt < 1 || my.cash < 1;
       });
     }
 

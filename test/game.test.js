@@ -346,16 +346,20 @@ function run(game, seconds) {
   assert.strictEqual(g.stocks.a.float, TOTAL_SHARES - FOUNDER_SHARES);
 
   const p0 = g.stocks.b.price;
-  assert.ok(g.stockTrade('a', { company: 'b', qty: 30, side: 'buy' }).ok);
-  assert.strictEqual(a.shares.b, 30);
-  assert.strictEqual(g.stocks.b.float, 30);
+  const under = TAKEOVER_SHARES - 30; // 인수선 바로 아래
+  assert.ok(g.stockTrade('a', { company: 'b', qty: under, side: 'buy' }).ok);
+  assert.strictEqual(a.shares.b, under);
+  assert.strictEqual(g.stocks.b.float, TOTAL_SHARES - FOUNDER_SHARES - under);
   assert.ok(g.stocks.b.price > p0, '매수하면 주가가 오른다');
-  assert.strictEqual(g.controllerOf('b'), null, '30주로는 경영권 없음');
+  assert.strictEqual(g.controllerOf('b'), null, '과반에 못 미치면 경영권 없음');
 
-  assert.ok(g.stockTrade('a', { company: 'b', qty: 21, side: 'buy' }).ok);
-  assert.strictEqual(a.shares.b, 51);
+  assert.ok(g.stockTrade('a', { company: 'b', qty: 30, side: 'buy' }).ok);
+  assert.strictEqual(a.shares.b, TAKEOVER_SHARES);
   assert.strictEqual(g.controllerOf('b').id, 'a');
-  assert.ok(!g.stockTrade('b', { company: 'b', qty: 30, side: 'buy' }).ok, '유통 물량 초과 매수 불가');
+  assert.ok(
+    !g.stockTrade('b', { company: 'b', qty: g.availableShares('b') + 1, side: 'buy' }).ok,
+    '유통 물량 초과 매수 불가'
+  );
 
   assert.ok(g.stockTrade('a', { company: 'b', qty: 10, side: 'sell' }).ok);
   assert.strictEqual(g.controllerOf('b'), null, '매도하면 경영권이 풀린다');
@@ -441,8 +445,8 @@ function run(game, seconds) {
   run(g, 10);
   const noControl = a.cash - aCash0;
 
-  // 51주로 경영권을 쥐면 매출의 25%가 추가로 들어온다
-  g.stockTrade('a', { company: 'b', qty: 31, side: 'buy' });
+  // 과반을 넘겨 경영권을 쥐면 매출의 25%가 추가로 들어온다
+  g.stockTrade('a', { company: 'b', qty: TAKEOVER_SHARES - 20, side: 'buy' });
   assert.strictEqual(g.controllerOf('b').id, 'a');
   const aCash1 = a.cash;
   run(g, 10);

@@ -102,15 +102,17 @@ function countBuildings(game, id) {
 
 /* ---------------- 봇이 경영권을 방어한다 ---------------- */
 {
-  const g = newGame(5000);
+  const g = newGame(200000);
   const attacker = g.player('p1');
-  g.stockTrade('p1', { company: 'p0', qty: 40, side: 'buy' });
-  assert.ok((attacker.shares.p0 || 0) >= TAKEOVER_SHARES - 15);
+  // 인수까지 얼마 안 남은 수준까지 사들여 위협한다
+  const threat = Math.round(TAKEOVER_SHARES * 0.85);
+  assert.ok(g.stockTrade('p1', { company: 'p0', qty: threat, side: 'buy' }).ok);
+  assert.ok((attacker.shares.p0 || 0) >= TAKEOVER_SHARES * 0.8);
 
-  const before = g.stocks.p0.float;
+  const before = g.player('p0').shares.p0;
   think(g, 'p0');
-  assert.ok(g.stocks.p0.float < before, '자기 주식을 되사서 방어해야 한다');
-  console.log('✓ 봇 경영권 방어');
+  assert.ok(g.player('p0').shares.p0 > before, '자기 주식을 되사서 방어해야 한다');
+  console.log(`✓ 봇 경영권 방어 (상대 ${threat}주 매집 → 되사기)`);
 }
 
 /* ---------------- 봇끼리 한 판을 끝까지 돌린다 ---------------- */

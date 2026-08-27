@@ -12,9 +12,13 @@
 
 const MAP_W = 12;
 const MAP_H = 12;
-const TOTAL_SHARES = 100; // 회사당 발행 주식 수
-const FOUNDER_SHARES = 40; // 창업자 보유분 (나머지 60주는 시장 유통)
-const TAKEOVER_SHARES = 51; // 이만큼 모으면 경영권 인수
+// 주식 수를 넉넉히 두면 소량 거래로도 값이 튀지 않아 실제로 사고팔 만해진다.
+// (주가 = 순자산 / 총주식수 이므로, 주식을 늘리면 그만큼 주당 가격은 내려간다)
+const TOTAL_SHARES = 500; // 회사당 발행 주식 수
+const FOUNDER_SHARES = 175; // 창업자 보유분 (나머지 325주는 시장 유통)
+const TAKEOVER_SHARES = 251; // 과반 — 이만큼 모으면 경영권 인수
+const STOCK_IMPACT = 0.0025; // 1주 체결마다 움직이는 주가 비율 (100주면 약 28%)
+const STOCK_SPREAD = 0.005; // 매수는 비싸게, 매도는 싸게 체결되는 폭
 // 배당은 주가에 비례해 초당 지급된다. 0.002 = 주가의 0.2%/초.
 // 주가가 오를수록 배당도 커지고, 회사 현금에서 빠져나가므로 남에게 지분을
 // 많이 내준 회사는 그만큼 성장이 느려진다. (되사면 그만큼 부담이 사라진다)
@@ -24,9 +28,11 @@ const TAKEOVER_CUT = 0.25; // 경영권 보유자가 가져가는 매출 비율
 const LOAN_INTEREST = 0.0008; // 대출 이자 (초당 0.08% — 10분이면 약 48%)
 const LOAN_MIN_LIMIT = 600; // 자산이 없어도 이만큼은 빌릴 수 있다
 const LOAN_RATIO = 0.5; // 총자산 대비 최대 대출 비율
-const MAX_SHORT = 40; // 회사당 공매도 가능 주식 수
+const MAX_SHORT = 200; // 회사당 공매도 가능 주식 수
 const SHORT_MARGIN = 0.5; // 공매도할 때 필요한 증거금 (거래대금 대비)
 const RESALE_RATE = 0.7; // 건물을 은행에 되팔 때 돌려받는 비율
+const AUTO_BUY_RATE = 20; // 자동 매수로 1초에 채울 수 있는 최대 수량
+const AUTO_BUY_RESERVE = 150; // 자동 매수가 남겨 두는 최소 운영자금
 
 const MATERIALS = {
   iron: { name: '철광석', base: 10 },
@@ -232,6 +238,8 @@ class Game {
       debt: 0,
       // shorts[대상 회사 id] = { shares, proceeds } — 공매도 미결제 잔고
       shorts: {},
+      // autoBuy[자재] = 유지할 수량. 공장이 재료 없이 멈추지 않게 자동으로 사 온다.
+      autoBuy: { iron: 0, oil: 0, grain: 0 },
       incomePerSec: 0,
       _incomeAccum: 0, // 1초 단위로 집계해 incomePerSec 로 옮긴다
     }));
@@ -240,7 +248,7 @@ class Game {
     this.stocks = {};
     for (const p of this.players) {
       this.stocks[p.id] = {
-        price: Math.max(1, settings.startCash / TOTAL_SHARES),
+        price: Math.max(0.05, settings.startCash / TOTAL_SHARES),
         float: TOTAL_SHARES - FOUNDER_SHARES, // 시장에 그냥 남아 있는 물량
         npc: 0, // 외부 투자자가 들고 있는 물량 (사람도 이걸 사 올 수 있다)
         mood: 1, // 시장 심리
@@ -396,6 +404,40 @@ class Game {
     return { ok: true };
   }
 
+  /* ---------------------------------------------------------------- 자동 매수 */
+
+  /**
+   * 자재를 이 수량만큼 유지한다. 모자라면 매 초 알아서 사 온다.
+   * 공장이 재료가 떨어져 멈추는 걸 막는 용도. 0 이면 끈다.
+   */
+  setAutoBuy(pid, mat, target) {
+    const p = this.player(pid);
+    if (!p || !this.market[mat]) return { ok: false, error: '잘못된 요청입니다.' };
+    target = Math.floor(Number(target) || 0);
+    if (target < 0 || target > 9999) return { ok: false, error: '수량이 잘못되었습니다.' };
+    p.autoBuy[mat] = target;
+    return { ok: true };
+  }
+
+  /** 유지 수량에 못 미치는 자재를 사 온다. 현금이 되는 만큼만 산다. */
+  runAutoBuy() {
+    for (const p of this.players) {
+      for (const [mat, target] of Object.entries(p.autoBuy || {})) {
+        if (!target || !this.market[mat]) continue;
+        const short = target - (p.inv[mat] || 0);
+        if (short < 1) continue;
+        const m = this.market[mat];
+        // 살 수 있는 만큼만 사되, 아무것도 못 하게 되지 않도록 운영자금은 남긴다.
+        // (한 번에 몰아사면 시세도 밀어올린다)
+        const spendable = p.cash - AUTO_BUY_RESERVE;
+        if (spendable <= 0) continue;
+        const afford = Math.floor(spendable / (m.price * 1.02));
+        const qty = Math.min(Math.ceil(short), AUTO_BUY_RATE, afford, 500);
+        if (qty > 0) this.trade(p.id, { mat, qty, side: 'buy' });
+      }
+    }
+  }
+
   /* ---------------------------------------------------------------- 대출 */
 
   /** 총자산 대비 한도 — 지금 더 빌릴 수 있는 금액 */
@@ -459,8 +501,8 @@ class Game {
     let price = s.price;
     let proceeds = 0;
     for (let i = 0; i < qty; i++) {
-      price = Math.max(1, price * 0.99);
-      proceeds += price * 0.995;
+      price = Math.max(0.01, price * (1 - STOCK_IMPACT));
+      proceeds += price * (1 - STOCK_SPREAD);
     }
     proceeds = Math.round(proceeds);
     // 증거금 — 되살 돈이 아예 없으면 못 건다
@@ -491,8 +533,8 @@ class Game {
     let price = s.price;
     let cost = 0;
     for (let i = 0; i < qty; i++) {
-      cost += price * 1.005;
-      price = price * 1.01;
+      cost += price * (1 + STOCK_SPREAD);
+      price = price * (1 + STOCK_IMPACT);
     }
     cost = Math.round(cost);
     if (p.cash < cost) return { ok: false, error: `현금이 부족합니다. (필요 ${cost})` };
@@ -659,8 +701,8 @@ class Game {
       const avail = this.availableShares(company);
       if (avail < qty) return { ok: false, error: `살 수 있는 물량이 ${avail}주뿐입니다.` };
       for (let i = 0; i < qty; i++) {
-        total += price * 1.005;
-        price = price * 1.01;
+        total += price * (1 + STOCK_SPREAD);
+        price = price * (1 + STOCK_IMPACT);
       }
       total = Math.round(total);
       if (p.cash < total) return { ok: false, error: `현금이 부족합니다. (필요 ${total})` };
@@ -678,8 +720,8 @@ class Game {
     if (side === 'sell') {
       if ((p.shares[company] || 0) < qty) return { ok: false, error: '보유 주식이 부족합니다.' };
       for (let i = 0; i < qty; i++) {
-        price = Math.max(1, price * 0.99);
-        total += price * 0.995;
+        price = Math.max(0.01, price * (1 - STOCK_IMPACT));
+        total += price * (1 - STOCK_SPREAD);
       }
       total = Math.round(total);
       p.cash += total;
@@ -854,22 +896,26 @@ class Game {
       s.mood += (1 - s.mood) * 0.08 * dt + (Math.random() - 0.5) * 0.28 * Math.sqrt(dt);
       s.mood = Math.min(1.7, Math.max(0.5, s.mood));
 
-      const fair = Math.max(1, this.netWorth(p) / TOTAL_SHARES);
+      const fair = Math.max(0.05, this.netWorth(p) / TOTAL_SHARES);
       const target = fair * s.mood;
       const gap = (target - s.price) / s.price;
 
-      // 괴리가 크면 외부 투자자가 실제로 물량을 사고판다
+      // 괴리가 크면 외부 투자자가 실제로 물량을 사고판다.
+      // 총주식수가 많으므로 한 번에 여러 주씩 움직여야 티가 난다.
+      const block = Math.max(1, Math.round(TOTAL_SHARES / 100));
       const intensity = Math.min(1.2, Math.abs(gap) * 3);
       if (Math.random() < intensity * dt) {
         if (gap > 0 && s.float > 0) {
-          s.float -= 1;
-          s.npc += 1;
+          const n = Math.min(block, s.float);
+          s.float -= n;
+          s.npc += n;
         } else if (gap < 0 && s.npc > 0) {
-          s.npc -= 1;
-          s.float += 1;
+          const n = Math.min(block, s.npc);
+          s.npc -= n;
+          s.float += n;
         }
       }
-      s.price = Math.round(Math.max(1, s.price + (target - s.price) * 0.25 * dt) * 100) / 100;
+      s.price = Math.round(Math.max(0.05, s.price + (target - s.price) * 0.25 * dt) * 100) / 100;
     }
   }
 
@@ -984,9 +1030,10 @@ class Game {
       this.startEvent();
     }
 
-    // 8) 초당 수익 집계 (1초마다 갱신, 살짝 평활화해서 숫자가 튀지 않게)
+    // 8) 초당 수익 집계 + 자재 자동 매수 (1초마다)
     this._incomeTimer += dt;
     if (this._incomeTimer >= 1) {
+      this.runAutoBuy();
       for (const p of this.players) {
         const measured = p._incomeAccum / this._incomeTimer;
         p.incomePerSec = Math.round((p.incomePerSec * 0.4 + measured * 0.6) * 100) / 100;
@@ -1069,6 +1116,7 @@ class Game {
           debt: Math.round(p.debt),
           credit: this.creditLimit(p),
           shorts,
+          autoBuy: p.autoBuy,
           incomePerSec: p.incomePerSec,
           netWorth: this.netWorth(p),
           controller: (() => {
@@ -1109,12 +1157,16 @@ module.exports = {
   TOTAL_SHARES,
   FOUNDER_SHARES,
   TAKEOVER_SHARES,
+  STOCK_IMPACT,
+  STOCK_SPREAD,
   DIVIDEND_YIELD,
   TAKEOVER_CUT,
   LOAN_INTEREST,
   LOAN_MIN_LIMIT,
   MAX_SHORT,
   RESALE_RATE,
+  AUTO_BUY_RATE,
+  AUTO_BUY_RESERVE,
   transportQuote,
   chebyshev,
   generateMap,
