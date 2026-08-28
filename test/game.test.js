@@ -444,6 +444,36 @@ function run(game, seconds) {
   console.log('✓ 시장 공유 (자재/주식/도시 수요 모두 한 판)');
 }
 
+/* ---------------- 자재 시세는 기준선 근처에서 논다 ---------------- */
+{
+  const g = newGame(200000);
+  const a = g.player('a');
+
+  // 한 번에 많이 사도 시세가 몇 배로 튀지 않는다
+  const p0 = g.market.iron.price;
+  g.trade('a', { mat: 'iron', qty: 100, side: 'buy' });
+  const jump = g.market.iron.price / p0;
+  assert.ok(jump > 1, '사면 오르긴 한다');
+  assert.ok(jump < 1.4, `100개를 사도 40% 안쪽으로만 오른다 (실제 ${Math.round((jump - 1) * 100)}%)`);
+
+  // 튄 값은 기준가로 제법 빠르게 돌아온다
+  run(g, 30);
+  assert.ok(g.market.iron.price < p0 * jump, '시간이 지나면 되돌아온다');
+
+  // 기준가는 수급에 따라 오르내릴 뿐 한 방향으로 흐르지 않는다.
+  // 아무도 아무것도 안 지으면 원래 값 그대로여야 한다.
+  const g2 = newGame(1000);
+  run(g2, 300);
+  for (const [key, m] of Object.entries(g2.market)) {
+    if (!MATERIALS[key]) continue;
+    assert.ok(
+      Math.abs(m.baseline - MATERIALS[key].base) < MATERIALS[key].base * 0.15,
+      `${MATERIALS[key].name} 기준가가 제자리를 지킨다 (${m.baseline.toFixed(1)} vs ${MATERIALS[key].base})`
+    );
+  }
+  console.log(`✓ 자재 시세 안정 (100개 매수 시 +${Math.round((jump - 1) * 100)}%, 기준가는 제자리)`);
+}
+
 /* ---------------- 자재 시장 ---------------- */
 {
   const g = newGame(100000);

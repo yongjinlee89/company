@@ -56,6 +56,11 @@ const UPKEEP_RATE = 0.0025;
 // 수익이 늘면 주가가 오르고 꺾이면 내려가야 하므로 넉넉히 잡는다.
 const INCOME_MULTIPLE = 100;
 
+// 자재 1개 체결마다 움직이는 시세 비율. 자동 매수가 초당 수십 개를 사기도 하므로
+// 이 값이 크면 시세가 몇 초 만에 배로 튄다.
+const MAT_IMPACT = 0.002;
+const MAT_SPREAD = 0.005; // 매수는 비싸게, 매도는 싸게 (왕복 차익 방지)
+
 const AUTO_BUY_RATE = 20; // 자동 매수로 1초에 채울 수 있는 최대 수량
 const AUTO_BUY_RESERVE = 150; // 자동 매수가 남겨 두는 최소 운영자금
 
@@ -737,8 +742,8 @@ class Game {
 
     if (side === 'buy') {
       for (let i = 0; i < qty; i++) {
-        total += price * 1.005;
-        price = Math.min(hi, price * 1.008);
+        total += price * (1 + MAT_SPREAD);
+        price = Math.min(hi, price * (1 + MAT_IMPACT));
       }
       total = Math.round(total);
       if (p.cash < total) return { ok: false, error: `현금이 부족합니다. (필요 ${total})` };
@@ -750,8 +755,8 @@ class Game {
     if (side === 'sell') {
       if ((p.inv[mat] || 0) < qty) return { ok: false, error: '재고가 부족합니다.' };
       for (let i = 0; i < qty; i++) {
-        price = Math.max(lo, price * 0.992);
-        total += price * 0.995;
+        price = Math.max(lo, price * (1 - MAT_IMPACT));
+        total += price * (1 - MAT_SPREAD);
       }
       total = Math.round(total);
       p.cash += total;
@@ -926,10 +931,9 @@ class Game {
         const d = demand[key] || 0;
         // -1(공급 과잉) ~ +1(품귀)
         const pressure = (d - s) / Math.max(0.4, s + d);
-        // 수급이 맞더라도 판이 커지면 자원이 귀해진다 — 초반에 사 둘 이유가 된다.
-        // 너무 세게 올리면 생산하는 쪽 마진만 깎이므로 완만하게.
-        const scale = Math.min(1, d / 3);
-        const target = origin * Math.min(2.5, Math.max(0.5, 1 + pressure * 1.2 + scale * 0.35));
+        // 수급 불균형에만 반응한다. 판이 커진다고 값이 계속 오르게 두면
+        // 기준가가 한 방향으로만 흘러 생산하는 쪽 마진만 깎인다.
+        const target = origin * Math.min(1.8, Math.max(0.6, 1 + pressure * 0.8));
         m.baseline += (target - m.baseline) * 0.05 * dt;
       }
       // 사건 배수는 따로 곱해 둔다 (기준가가 흐르는 중에도 사건이 겹칠 수 있다)
@@ -958,7 +962,8 @@ class Game {
       const keys = Object.keys(this.market);
       const mat = keys[randInt(keys.length)];
       const up = pick.kind === 'mat-up';
-      const mult = up ? 1.6 + Math.random() * 0.6 : 0.45 + Math.random() * 0.25;
+      // 사건은 흔들되 시세가 몇 배로 튀지는 않게 (±30~55% 선)
+      const mult = up ? 1.3 + Math.random() * 0.25 : 0.6 + Math.random() * 0.15;
       const m = this.market[mat];
       m.eventMult = mult;
       m.base = Math.round(m.baseline * mult * 100) / 100; // 바로 반영
@@ -1170,8 +1175,9 @@ class Game {
 
     // 4) 기준가는 수요·공급을 따라 흐르고, 시세는 그 기준가로 서서히 회귀한다
     this.updateBaselines(dt);
+    // 거래로 밀린 시세는 기준가로 제법 빠르게 돌아온다 (한 번 튄 값이 오래 가지 않게)
     for (const m of Object.values(this.market)) {
-      m.price = Math.round((m.price + (m.base - m.price) * 0.02 * dt) * 100) / 100;
+      m.price = Math.round((m.price + (m.base - m.price) * 0.06 * dt) * 100) / 100;
     }
     for (const c of this.cities) {
       for (const k of Object.keys(c.demand)) {
