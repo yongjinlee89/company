@@ -78,8 +78,6 @@ function checkRoutes(game, me) {
   let changed = false;
   for (const { idx, tile } of myTiles(game, me.id)) {
     if (tile.b !== 'factory') continue;
-    // 하이테크 공장에 재료를 대 주려고 일부러 노선을 끈 공장은 건드리지 않는다
-    if (idx === me._feeder) continue;
     const mode = tile.mode || 'machine';
     const best = game.bestRoute(idx, mode);
     if (!best) continue;
@@ -149,34 +147,22 @@ function tryAcquire(game, me, kind) {
 }
 
 /**
- * 회사가 어느 정도 자리를 잡으면 하이테크(반도체)로 넘어간다.
- * 기계 공장 하나의 노선을 꺼서 기계를 모으고, 그걸 반도체 공장에 먹인다.
+ * 회사가 어느 정도 자리를 잡으면 공장 하나를 하이테크(반도체)로 돌린다.
+ * 반도체는 철·원유를 쓰므로 기계 노선과 재료가 같아, 기계 쪽 봇만 넘어간다.
  * @returns {boolean} 맵이 바뀌었는지
  */
 function goHitech(game, me) {
+  if (me._focus !== 'machine') return false;
   const factories = myTiles(game, me.id).filter((t) => t.tile.b === 'factory');
   if (factories.length < 3 || me.cash < 2000) return false;
+  if (factories.some((t) => HITECH[t.tile.mode])) return false; // 이미 있다
 
-  const machines = factories.filter((t) => (t.tile.mode || 'machine') === 'machine');
-  if (machines.length < 2) return false; // 기계를 대 줄 공장이 남아 있어야 한다
-
-  if (!factories.some((t) => HITECH[t.tile.mode])) {
-    // 도시에서 먼 공장을 하이테크로 돌린다 (가까운 쪽은 배송에 남겨 둔다)
-    const far = machines
-      .slice()
-      .sort((a, b) => nearestCityDist(game, b.idx) - nearestCityDist(game, a.idx))[0];
-    return game.setFactoryMode(me.id, far.idx, 'semi').ok;
-  }
-
-  // 반도체 공장이 생겼으면 기계 공장 하나는 노선을 꺼서 재료를 쌓는다
-  if (me._feeder === undefined) {
-    const feeder = machines.find((t) => t.tile.route !== null);
-    if (feeder && game.setRoute(me.id, feeder.idx, null).ok) {
-      me._feeder = feeder.idx;
-      return true;
-    }
-  }
-  return false;
+  // 도시에서 먼 공장을 하이테크로 돌린다 (가까운 쪽은 배송에 남겨 둔다)
+  const far = factories
+    .filter((t) => (t.tile.mode || 'machine') === 'machine')
+    .sort((a, b) => nearestCityDist(game, b.idx) - nearestCityDist(game, a.idx))[0];
+  if (!far) return false;
+  return game.setFactoryMode(me.id, far.idx, 'semi').ok;
 }
 
 /**

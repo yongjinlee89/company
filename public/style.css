@@ -838,6 +838,10 @@ button.danger {
   border-color: #4a6b5a;
 }
 
+.bond-card {
+  border-color: #6b5a2f;
+}
+
 .rnd-label {
   flex: 1;
   min-width: 0;

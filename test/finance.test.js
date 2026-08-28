@@ -7,6 +7,7 @@ const {
   Game, TILE_TYPES, BUILDINGS, MAX_SHORT, LOAN_INTEREST, LOAN_MIN_LIMIT, RESALE_RATE,
   TAKEOVER_SHARES, AUTO_BUY_RATE, AUTO_BUY_RESERVE,
   TOTAL_SHARES, FOUNDER_SHARES, INITIAL_FLOAT,
+  BOND_INTEREST, MARKET_CRASH_MULT, MARKET_RALLY_MULT,
 } = require('../src/game');
 
 function newGame(startCash = 5000, duration = 600) {
@@ -144,6 +145,43 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   assert.ok(c.debt > d0, '못 갚은 이자는 빚으로 불어난다');
   assert.strictEqual(c.cash, 0, '없는 현금에서 더 빼가지 않는다');
   console.log(`✓ 대출 (이자 ${LOAN_INTEREST * 100}%/초, 미납분은 복리)`);
+}
+
+/* ---------------- 채권 ---------------- */
+{
+  const g = newGame(1000);
+  const a = g.player('a');
+
+  assert.ok(!g.buyBond('a', 2000).ok, '현금보다 많이는 못 산다');
+  assert.ok(g.buyBond('a', 500).ok);
+  assert.strictEqual(a.cash, 500);
+  assert.strictEqual(a.bonds, 500);
+
+  // 채권을 사도 순자산은 그대로다 (현금 -500, 채권 +500)
+  const g2 = newGame(1000);
+  const worthBefore = g2.netWorth(g2.player('a'));
+  g2.buyBond('a', 500);
+  assert.strictEqual(g2.netWorth(g2.player('a')), worthBefore, '채권은 순자산을 부풀리지 않는다');
+
+  // 이자가 초당 원금에 붙는다 (복리)
+  const bondsBefore = a.bonds;
+  run(g, 10);
+  const gained = a.bonds - bondsBefore;
+  const expected = bondsBefore * BOND_INTEREST * 10;
+  assert.ok(
+    Math.abs(gained - expected) < expected * 0.05 + 0.01,
+    `10초치 이자 ≈ ${expected.toFixed(2)} (실제 ${gained.toFixed(2)})`
+  );
+  assert.ok(BOND_INTEREST < LOAN_INTEREST, '채권 이율은 대출 이자보다 낮아야 빌려서 넣는 차익이 없다');
+
+  // 현금화
+  const cashBefore = a.cash;
+  assert.ok(g.redeemBond('a', 200).ok);
+  assert.strictEqual(a.cash, cashBefore + 200);
+  assert.ok(g.redeemBond('a', 99999).ok, '가진 만큼만 현금화한다');
+  assert.strictEqual(a.bonds, 0);
+  assert.ok(!g.redeemBond('a', 100).ok, '채권이 없으면 거부');
+  console.log(`✓ 채권 (이자 ${BOND_INTEREST * 100}%/초 복리, 대출보다 낮은 이율)`);
 }
 
 /* ---------------- 공매도 ---------------- */
@@ -353,6 +391,8 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
     const before = m.price;
     run(g, 15);
     assert.ok(fired.kind === 'mat-up' ? m.price > before : m.price < before, '시세가 사건을 따라 움직인다');
+  } else if (fired.kind === 'market-crash' || fired.kind === 'market-rally') {
+    assert.notStrictEqual(g.marketMult, 1, '사건 중에는 전체 주가 배수가 바뀐다');
   } else {
     assert.notStrictEqual(g.cities[fired.target].boost, 1, '사건 중에는 도시 가격 배수가 바뀐다');
   }
@@ -364,7 +404,43 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
     assert.strictEqual(m.base, m.baseline, '기준가가 원래대로 돌아온다');
   }
   for (const c of g.cities) assert.strictEqual(c.boost, 1, '도시 배수도 원래대로');
+  assert.strictEqual(g.marketMult, 1, '전체 주가 배수도 원래대로');
   console.log(`✓ 사건 (${fired.icon} ${fired.text})`);
+}
+
+/* ---------------- 금융위기 / 랠리 (주식시장 전체 사건) ---------------- */
+{
+  const g = newGame(5000, 1200);
+  for (const s of Object.values(g.stocks)) s.mood = 1; // 개별 편차를 없애 비교를 쉽게 한다
+
+  // 확률적으로 뽑히므로 원하는 종류가 나올 때까지 다시 뽑는다
+  let fired = null;
+  for (let i = 0; i < 300 && !fired; i++) {
+    g.startEvent();
+    if (g.event.kind === 'market-crash') fired = g.event;
+    else g.endEvent();
+  }
+  assert.ok(fired, '금융위기 사건을 뽑을 수 있어야 한다');
+  assert.ok(fired.mult >= MARKET_CRASH_MULT[0] && fired.mult <= MARKET_CRASH_MULT[1], '위기 배수가 정해진 범위 안');
+  assert.ok(Math.abs(g.marketMult - fired.mult) < 0.01, '전체 배수에 즉시 반영된다 (표시값은 반올림)');
+
+  // 예고 없이 전 종목이 동시에 눌린다
+  const before = {};
+  for (const [id, s] of Object.entries(g.stocks)) before[id] = s.price;
+  run(g, 15);
+  for (const [id, s] of Object.entries(g.stocks)) {
+    assert.ok(s.price < before[id], `${id} 주가도 위기 중엔 함께 눌린다 (보유만 하고 있어도 안전하지 않다)`);
+  }
+
+  g.endEvent();
+  assert.strictEqual(g.marketMult, 1, '위기가 끝나면 배수가 원래대로 돌아온다');
+
+  // 랠리(상승)보다 위기(하락) 쪽 폭이 커야, 그냥 들고 버티는 게 유리해지지 않는다
+  assert.ok(
+    1 - MARKET_CRASH_MULT[0] > MARKET_RALLY_MULT[1] - 1,
+    '하락 쪽 최대 낙폭이 상승 쪽 최대 상승폭보다 커야 한다'
+  );
+  console.log(`✓ 금융위기/랠리 (위기 시 전 종목 동시에 ${Math.round((1 - fired.mult) * 100)}% 급락)`);
 }
 
 console.log('\n금융/부동산 테스트 전부 통과!');

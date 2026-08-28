@@ -139,9 +139,11 @@ io.on('connection', (socket) => {
   socket.on('unlistTile', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.unlistTile(pid, p.idx))));
   socket.on('buyListedTile', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.buyListedTile(pid, p.idx))));
 
-  // 대출 / 공매도
+  // 대출 / 채권 / 공매도
   socket.on('borrow', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.borrow(pid, p.amount))));
   socket.on('repay', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.repay(pid, p.amount))));
+  socket.on('buyBond', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.buyBond(pid, p.amount))));
+  socket.on('redeemBond', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.redeemBond(pid, p.amount))));
   socket.on('shortSell', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.shortSell(pid, p.company, p.qty))));
   socket.on('coverShort', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.coverShort(pid, p.company, p.qty))));
 

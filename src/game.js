@@ -95,12 +95,15 @@ const PRODUCTS = {
 
 /**
  * 하이테크 제품. 도시로 보내지 않고 원자재처럼 재고로 쌓아 두었다가 시장에 판다.
- * 기계를 재료로 쓰므로, 기계 공장의 배송 노선을 꺼서 기계를 모아야 만들 수 있다.
- * 손이 많이 가는 대신 개당 마진이 크다.
+ *
+ * 재료는 원자재를 바로 쓴다. 예전에는 기계를 재료로 삼았는데, 기계 공장은
+ * 만드는 족족 도시로 팔려 나가서 재료를 모으려면 노선을 꺼 둬야 했다.
+ * 그 한 단계가 지나치게 번거로워서 원자재로 바꿨다.
+ * (자동차가 쓰는 반도체는 하이테크라 어차피 재고로 쌓이므로 손이 안 간다)
  */
 const HITECH = {
-  semi: { name: '반도체', base: 200, recipe: { machine: 1, oil: 2 }, rate: 0.07 },
-  car: { name: '자동차', base: 520, recipe: { machine: 2, semi: 1 }, rate: 0.035 },
+  semi: { name: '반도체', base: 200, recipe: { iron: 1, oil: 4 }, rate: 0.07 },
+  car: { name: '자동차', base: 520, recipe: { iron: 3, semi: 1 }, rate: 0.035 },
 };
 
 /** 공장이 만들 수 있는 모든 것 */
@@ -168,16 +171,24 @@ const CITY_NAMES = ['서울', '부산', '광주', '대전'];
 /**
  * 무작위 사건. 원자재 시세와 도시 수요를 흔들어서
  * 한 번 짜 놓은 공급망이 계속 최적이지 않도록 만든다.
+ * market-crash/market-rally 는 개별 회사가 아니라 주식시장 전체를 한꺼번에
+ * 흔든다 — 가만히 들고만 있어도 안전하지 않게 만들어서 계속 주식만 쥐고
+ * 있는 게 최선이 되지 않게 한다. 다른 사건과 마찬가지로 예고 없이 터진다.
+ * 하락 쪽을 상승 쪽보다 크게 잡아서, 버티는 보상보다 흔들리는 리스크가 크게 한다.
  */
 const EVENT_KINDS = [
   { kind: 'mat-up', weight: 3 },
   { kind: 'mat-down', weight: 3 },
   { kind: 'city-boom', weight: 2 },
   { kind: 'city-slump', weight: 2 },
+  { kind: 'market-crash', weight: 2 },
+  { kind: 'market-rally', weight: 2 },
 ];
 const EVENT_FIRST = 35; // 첫 사건까지 (초)
 const EVENT_GAP = [40, 75]; // 사건 사이 간격
 const EVENT_LEN = [25, 45]; // 사건 지속 시간
+const MARKET_CRASH_MULT = [0.45, 0.6]; // 금융위기 동안 전체 주가 목표에 곱하는 배수
+const MARKET_RALLY_MULT = [1.15, 1.3]; // 랠리 동안 전체 주가 목표에 곱하는 배수
 
 const PLAYER_COLORS = ['#e5484d', '#3b82f6', '#22a06b', '#f59e0b', '#8b5cf6', '#0ea5b7'];
 
@@ -333,6 +344,7 @@ class Game {
       // shares[대상 회사 id] = 보유 주식 수
       shares: { [info.id]: FOUNDER_SHARES },
       debt: 0,
+      bonds: 0, // 채권 원금 — 초당 이자가 붙어 스스로 불어난다
       // shorts[대상 회사 id] = { shares, proceeds } — 공매도 미결제 잔고
       shorts: {},
       // autoBuy[자재] = 유지할 수량. 공장이 재료 없이 멈추지 않게 자동으로 사 온다.
@@ -360,6 +372,7 @@ class Game {
     }
 
     this.event = null;
+    this.marketMult = 1; // market-crash/market-rally 가 지속되는 동안 전체 주가 목표에 곱해진다
     this._nextEventAt = EVENT_FIRST;
     this._incomeTimer = 0;
     this._controllers = {};
@@ -581,6 +594,38 @@ class Game {
     p.debt -= pay;
     if (p.debt < 0.5) p.debt = 0;
     this.pushLog(`${p.name} 님이 대출 ${pay}을(를) 상환했습니다.`);
+    return { ok: true, paid: pay };
+  }
+
+  /* ---------------------------------------------------------------- 채권 */
+
+  /** 여윳돈을 넣어 두면 초당 이자가 붙는다. 대출보다 이율이 낮아 빌려서 넣는 차익은 없다. */
+  buyBond(pid, amount) {
+    if (this.ended) return { ok: false, error: '게임이 끝났습니다.' };
+    const p = this.player(pid);
+    amount = Math.floor(Number(amount) || 0);
+    if (!p) return { ok: false, error: '잘못된 요청입니다.' };
+    if (amount < 1) return { ok: false, error: '금액을 입력해 주세요.' };
+    if (p.cash < amount) return { ok: false, error: '현금이 부족합니다.' };
+    p.cash -= amount;
+    p.bonds += amount;
+    this.pushLog(`${p.name} 님이 채권 ${amount}을(를) 매입했습니다.`);
+    return { ok: true };
+  }
+
+  /** 채권을 원금 그대로 현금화한다. */
+  redeemBond(pid, amount) {
+    const p = this.player(pid);
+    amount = Math.floor(Number(amount) || 0);
+    if (!p) return { ok: false, error: '잘못된 요청입니다.' };
+    if (p.bonds <= 0) return { ok: false, error: '보유한 채권이 없습니다.' };
+    if (amount < 1) return { ok: false, error: '금액을 입력해 주세요.' };
+    const pay = Math.min(amount, Math.floor(p.bonds));
+    if (pay < 1) return { ok: false, error: '현금화할 금액이 부족합니다.' };
+    p.bonds -= pay;
+    if (p.bonds < 0.5) p.bonds = 0;
+    p.cash += pay;
+    this.pushLog(`${p.name} 님이 채권 ${pay}을(를) 현금화했습니다.`);
     return { ok: true, paid: pay };
   }
 
@@ -1095,6 +1140,22 @@ class Game {
           ? `${name} 품귀 — 시세가 ${Math.round(mult * 100)}% 수준으로 치솟습니다`
           : `${name} 공급 과잉 — 시세가 ${Math.round(mult * 100)}% 수준으로 떨어집니다`,
       };
+    } else if (pick.kind === 'market-crash' || pick.kind === 'market-rally') {
+      const crash = pick.kind === 'market-crash';
+      const range = crash ? MARKET_CRASH_MULT : MARKET_RALLY_MULT;
+      // 화면에 보여 주는 배수와 실제로 곱하는 배수가 어긋나지 않게 같은 값을 쓴다
+      const mult = Math.round((range[0] + Math.random() * (range[1] - range[0])) * 100) / 100;
+      this.marketMult = mult;
+      this.event = {
+        kind: pick.kind,
+        target: null,
+        mult,
+        until,
+        icon: crash ? '💥' : '🚀',
+        text: crash
+          ? `금융위기 — 전 종목 주가가 일제히 ${Math.round(mult * 100)}% 수준으로 급락합니다`
+          : `증시 랠리 — 전 종목 주가가 일제히 ${Math.round(mult * 100)}% 수준으로 치솟습니다`,
+      };
     } else {
       const ci = randInt(this.cities.length);
       const boom = pick.kind === 'city-boom';
@@ -1122,6 +1183,8 @@ class Game {
       const m = this.market[e.target];
       m.eventMult = 1;
       m.base = Math.round(m.baseline * 100) / 100;
+    } else if (e.kind === 'market-crash' || e.kind === 'market-rally') {
+      this.marketMult = 1;
     } else {
       this.cities[e.target].boost = 1;
     }
@@ -1150,7 +1213,8 @@ class Game {
       // 반대로 매출이 꺾이면 자산이 그대로여도 주가가 내려간다.
       const worth = this.operatingWorth(p) + p.incomePerSec * INCOME_MULTIPLE;
       const fair = Math.max(0.05, worth / TOTAL_SHARES);
-      const target = fair * s.mood;
+      // marketMult 는 금융위기/랠리 동안만 1이 아니며, 회사 개별 mood 와 별도로 전체를 흔든다
+      const target = fair * s.mood * this.marketMult;
       const gap = (target - s.price) / s.price;
 
       /*
@@ -1341,6 +1405,14 @@ class Game {
       p._incomeAccum -= interest;
     }
 
+    // 5-b) 채권 이자 — 대출과 반대로 원금에 붙어 스스로 불어난다 (복리)
+    for (const p of this.players) {
+      if (p.bonds <= 0) continue;
+      const interest = p.bonds * BOND_INTEREST * dt;
+      p.bonds += interest;
+      p._incomeAccum += interest;
+    }
+
     // 6) 주식 — 미발행 물량이 조금씩 상장되고, 외부 투자자가 거래하며 주가가 오르내린다
     this.releaseShares(dt);
     this.tradeNpc(dt);
@@ -1401,7 +1473,7 @@ class Game {
    * 그 고리를 끊어야 주가가 실제로 회사를 키운 만큼만 오른다.
    */
   operatingWorth(p) {
-    let v = p.cash;
+    let v = p.cash + p.bonds;
     for (const [k, n] of Object.entries(p.inv)) v += this.itemValue(k) * n;
     for (let i = 0; i < this.map.tiles.length; i++) {
       if (this.map.tiles[i].owner === p.id) v += this.tileValue(i);
@@ -1465,6 +1537,7 @@ class Game {
           inv,
           shares: p.shares,
           debt: Math.round(p.debt),
+          bonds: Math.round(p.bonds),
           credit: this.creditLimit(p),
           shorts,
           autoBuy: p.autoBuy,
@@ -1496,6 +1569,7 @@ class Game {
         dividendYield: DIVIDEND_YIELD,
         takeoverCut: TAKEOVER_CUT,
         loanInterest: LOAN_INTEREST,
+        bondInterest: BOND_INTEREST,
         maxShort: MAX_SHORT,
         resaleRate: RESALE_RATE,
         rentSaturation: RENT_SATURATION,
@@ -1527,6 +1601,7 @@ module.exports = {
   TAKEOVER_CUT,
   LOAN_INTEREST,
   LOAN_MIN_LIMIT,
+  BOND_INTEREST,
   UPKEEP_RATE,
   INCOME_MULTIPLE,
   RESEARCH,
@@ -1535,6 +1610,8 @@ module.exports = {
   RESALE_RATE,
   AUTO_BUY_RATE,
   AUTO_BUY_RESERVE,
+  MARKET_CRASH_MULT,
+  MARKET_RALLY_MULT,
   transportQuote,
   chebyshev,
   generateMap,

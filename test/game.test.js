@@ -516,14 +516,21 @@ function run(game, seconds) {
   assert.ok(!g.setRoute('a', idx, 0).ok, '하이테크 공장에는 노선을 걸 수 없다');
   assert.strictEqual(g.quoteRoute(idx, 0, 'semi'), null, '도시 견적도 없다');
 
-  // 재료(기계 + 원유)를 넣으면 반도체가 재고로 쌓인다
-  a.inv.machine = 100;
-  a.inv.oil = 200;
+  // 재료는 원자재를 바로 쓴다 — 기계를 모아 둘 필요가 없다
+  assert.ok(!HITECH.semi.recipe.machine, '반도체는 기계를 쓰지 않는다');
+  for (const k of Object.keys(HITECH.semi.recipe)) {
+    assert.ok(MATERIALS[k], `반도체 재료 ${k} 는 원자재여야 한다`);
+  }
+  a.inv.iron = 200;
+  a.inv.oil = 400;
   const cash0 = a.cash;
   run(g, 10);
   const made = HITECH.semi.rate * 10;
   assert.ok(Math.abs(a.inv.semi - made) < 0.05, `10초에 ${made}개 (실제 ${a.inv.semi})`);
-  assert.ok(Math.abs(a.inv.machine - (100 - made)) < 0.05, '기계를 개당 1개 소비');
+  assert.ok(
+    Math.abs(a.inv.iron - (200 - made * HITECH.semi.recipe.iron)) < 0.05,
+    '철을 만든 만큼 소비한다'
+  );
   // 도시로 안 팔리므로 매출이 없다 (유지비만 조금씩 빠져나간다)
   assert.ok(a.cash <= cash0, '하이테크는 만들어도 도시 매출이 생기지 않는다');
 
@@ -542,18 +549,28 @@ function run(game, seconds) {
   assert.ok(HITECH.car.base > HITECH.semi.base, '뒷단계일수록 값이 비싸다');
   assert.ok(HITECH.semi.base > PRODUCTS.machine.base, '하이테크가 도시 제품보다 비싸다');
 
-  // 기계 공장 노선을 끄면 기계가 재고로 쌓여 하이테크 재료가 된다
-  const g2 = newGame(20000);
-  const i2 = g2.map.tiles.findIndex((t) => t.t === 'plain');
-  g2.buyTile('a', i2);
-  g2.build('a', i2, 'factory');
+  // 자동차는 반도체를 쓴다. 반도체도 하이테크라 저절로 재고로 쌓이므로,
+  // 공장 둘만 세워 두면 손대지 않아도 사슬이 굴러간다.
+  const g2 = newGame(30000);
   const p2 = g2.player('a');
-  p2.inv.iron = 500;
-  p2.inv.oil = 500;
-  g2.setRoute('a', i2, null);
-  run(g2, 10);
-  assert.ok(p2.inv.machine > 1, '노선을 끄면 기계가 재고로 쌓인다');
-  console.log(`✓ 하이테크 (반도체 ${HITECH.semi.base} / 자동차 ${HITECH.car.base}, 시장 판매)`);
+  const plain = () => g2.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
+  const semiIdx = plain();
+  g2.buyTile('a', semiIdx);
+  g2.build('a', semiIdx, 'factory');
+  g2.setFactoryMode('a', semiIdx, 'semi');
+  const carIdx = plain();
+  g2.buyTile('a', carIdx);
+  g2.build('a', carIdx, 'factory');
+  g2.setFactoryMode('a', carIdx, 'car');
+  p2.inv.iron = 5000;
+  p2.inv.oil = 5000;
+
+  run(g2, 120);
+  assert.ok(p2.inv.car > 0.5, `자동차가 저절로 만들어진다 (${p2.inv.car.toFixed(1)}개)`);
+  assert.ok(!g2.map.tiles[carIdx].idle, '반도체가 알아서 공급되어 자동차 공장이 멈추지 않는다');
+  console.log(
+    `✓ 하이테크 (원자재로 직접 생산, 반도체 ${HITECH.semi.base} / 자동차 ${HITECH.car.base})`
+  );
 }
 
 /* ---------------- 주가는 본업 가치만 따라간다 ---------------- */

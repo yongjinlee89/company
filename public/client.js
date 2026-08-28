@@ -269,7 +269,7 @@ function renderEvent() {
   banner.classList.remove('hidden');
   const left = Math.max(0, Math.round(e.until - S.game.elapsed));
   banner.textContent = `${e.icon} ${e.text} (${left}초 남음)`;
-  banner.classList.toggle('bad', e.kind === 'mat-up' || e.kind === 'city-slump');
+  banner.classList.toggle('bad', e.kind === 'mat-up' || e.kind === 'city-slump' || e.kind === 'market-crash');
 }
 
 /**
@@ -853,7 +853,7 @@ function buildTilePanel(panel, tile, live) {
         // 노선을 끄면 재고가 쌓인다 — 하이테크 재료를 모으는 방법이다
         const off = t.route === null || t.route === undefined;
         hint.textContent = off
-          ? `노선 없음 — ${nameOf(m)}가 재고로 쌓입니다 (하이테크 재료용)`
+          ? `노선 없음 — ${nameOf(m)}가 재고로 쌓이기만 합니다`
           : '만들어지는 대로 자동 판매됩니다.';
         hint.classList.toggle('listed', off);
       });
@@ -1360,6 +1360,55 @@ function renderCompany() {
       });
     }
 
+    // 채권 — 당장 쓸 데 없는 여윳돈을 넣어 두면 초당 이자가 붙는 안전 자산.
+    if (me() && !g.ended) {
+      const card = el('div', 'company-card bond-card');
+      card.appendChild(el('b', '', '📜 채권'));
+      const info = el('div', 'small');
+      card.appendChild(info);
+
+      const buyRow = el('div', 'loan-row');
+      buyRow.appendChild(el('span', 'small loan-label', '매입'));
+      const buyBtns = [100, 500, 1000].map((amt) => {
+        const b = el('button', 'buy', `+${fmt(amt)}`);
+        b.addEventListener('click', () => emit('buyBond', { amount: amt }));
+        buyRow.appendChild(b);
+        return { b, amt };
+      });
+      card.appendChild(buyRow);
+
+      const redeemRow = el('div', 'loan-row');
+      redeemRow.appendChild(el('span', 'small loan-label', '현금화'));
+      const redeemBtns = [100, 500, 1000].map((amt) => {
+        const b = el('button', 'sell', `-${fmt(amt)}`);
+        b.addEventListener('click', () => emit('redeemBond', { amount: amt }));
+        redeemRow.appendChild(b);
+        return { b, amt };
+      });
+      const allRedeemBtn = el('button', 'sell', '전액');
+      allRedeemBtn.addEventListener('click', () => {
+        const my = me();
+        if (!my || my.bonds < 1) return toast('보유한 채권이 없습니다.');
+        emit('redeemBond', { amount: Math.ceil(my.bonds) });
+      });
+      redeemRow.appendChild(allRedeemBtn);
+      card.appendChild(redeemRow);
+      box.appendChild(card);
+
+      live.push(() => {
+        const my = me();
+        if (!my) return;
+        const C = S.game.constants;
+        const rate = Math.round(C.bondInterest * 10000) / 100;
+        info.innerHTML = '';
+        info.appendChild(el('span', my.bonds > 0 ? 'up' : '', `보유 ${fmt(my.bonds)}`));
+        info.appendChild(el('span', '', ` · 이자 ${rate}%/초 (+${fmt1(my.bonds * C.bondInterest)}/초)`));
+        for (const { b, amt } of buyBtns) b.disabled = my.cash < amt;
+        for (const { b, amt } of redeemBtns) b.disabled = my.bonds < amt;
+        allRedeemBtn.disabled = my.bonds < 1;
+      });
+    }
+
     order.forEach((pid, i) => {
       const p = g.players.find((x) => x.id === pid);
       const card = el('div', 'company-card');
@@ -1389,7 +1438,8 @@ function renderCompany() {
         const now = gg.players.find((x) => x.id === pid);
         if (!now) return;
         const debt = now.debt > 0 ? ` · 빚 ${fmt(now.debt)}` : '';
-        moneyText.textContent = `현금 ${fmt(now.cash)} · 순자산 ${fmt(now.netWorth)}${debt} · `;
+        const bonds = now.bonds > 0 ? ` · 채권 ${fmt(now.bonds)}` : '';
+        moneyText.textContent = `현금 ${fmt(now.cash)} · 순자산 ${fmt(now.netWorth)}${debt}${bonds} · `;
         incomeText.textContent = `${now.incomePerSec >= 0 ? '+' : ''}${fmt1(now.incomePerSec)}/초`;
         incomeText.className = now.incomePerSec > 0.05 ? 'up' : now.incomePerSec < -0.05 ? 'down' : '';
 
