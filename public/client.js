@@ -366,7 +366,7 @@ const TILE_COLORS = {
   city: '#5a4a2a',
 };
 const TILE_ICONS = { iron: '⛏️', oil: '🛢️', farm: '🌱', mountain: '⛰️', city: '🏙️' };
-const BUILDING_ICONS = { mine: '⚒️', rig: '🏗️', farm: '🚜', factory: '🏭' };
+const BUILDING_ICONS = { mine: '⚒️', rig: '🏗️', farm: '🚜', factory: '🏭', rental: '🏬' };
 
 /**
  * 맵이 화면을 다 먹지 않도록 남는 공간의 80% 만 쓴다 (나머지는 메뉴 몫).
@@ -703,7 +703,9 @@ function buildTilePanel(panel, tile, live) {
         ? Object.entries(spec.out)
             .map(([k, r]) => `${nameOf(k)} +${r}/초`)
             .join(', ')
-        : '제품 생산 (기계/식품)';
+        : spec.rent
+          ? '임대료 수입 (공급이 늘면 임대료는 내려감)'
+          : '제품 생산 (기계/식품/하이테크)';
       costButton(`${spec.name} 건설 (${spec.cost}) — ${desc}`, spec.cost, () =>
         emit('build', { idx: selectedTile, kind })
       );
@@ -716,7 +718,8 @@ function buildTilePanel(panel, tile, live) {
     const level = tile.level || 1;
     if (!spec.maxLevel || level >= spec.maxLevel) return;
     const cost = spec.upgradeCost * level;
-    costButton(`⬆️ ${level + 1}단계 증설 (${cost}) · 생산 ${level + 1}배`, cost, () =>
+    const what = spec.rent ? '임대료' : '생산';
+    costButton(`⬆️ ${level + 1}단계 증설 (${cost}) · ${what} ${level + 1}배`, cost, () =>
       emit('upgrade', { idx: selectedTile })
     );
   };
@@ -729,6 +732,23 @@ function buildTilePanel(panel, tile, live) {
       .map(([k, r]) => `${nameOf(k)} +${Math.round(r * level * 100) / 100}/초`)
       .join(', ');
     panel.appendChild(el('div', 'tp-row', `⛏️ ${spec.name} ${level}단계 · ${out}`));
+    upgradeButton();
+  }
+
+  // 임대 상가 — 지금 임대료와 전체 공급을 보여준다 (공급이 늘면 임대료가 내려간다)
+  if (tile.owner === ME && tile.b === 'rental') {
+    const spec = C.buildings.rental;
+    const level = tile.level || 1;
+    const row = el('div', 'tp-row');
+    const note = el('div', 'tp-row small');
+    panel.appendChild(row);
+    panel.appendChild(note);
+    live.push(() => {
+      const supply = S.game.rentalSupply || 0;
+      const rent = (spec.rent * level) / (1 + supply * C.rentSaturation);
+      row.textContent = `🏬 ${spec.name} ${level}단계 · 임대료 +${fmt1(rent)}/초`;
+      note.textContent = `판 전체 임대 공급 ${supply} — 늘어날수록 임대료가 내려갑니다`;
+    });
     upgradeButton();
   }
 

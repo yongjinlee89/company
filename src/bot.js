@@ -119,6 +119,7 @@ function tryAcquire(game, me, kind) {
   const spec = BUILDINGS[kind];
   const terrain = spec.on;
 
+  // 임대 상가는 도시에서 멀어도 상관없으므로 아무 빈 평지나 쓴다
   const own = myTiles(game, me.id).find((t) => t.tile.t === terrain && !t.tile.b);
   if (own) {
     if (me.cash < spec.cost) return false;
@@ -245,7 +246,13 @@ function buildUp(game, me) {
     return tryUpgrade(game, me, worst.kind) || tryAcquire(game, me, worst.kind);
   }
   if (tryUpgrade(game, me)) return true;
-  return tryAcquire(game, me, 'factory');
+  if (tryAcquire(game, me, 'factory')) return true;
+
+  // 더 지을 게 없으면 임대업. 다만 임대료가 유지비의 두 배도 안 되면 짓지 않는다.
+  const rentSpec = BUILDINGS.rental;
+  const rent = rentSpec.rent / (1 + game.rentalSupply() * 0.06);
+  if (rent > rentSpec.cost * 0.0025 * 2) return tryAcquire(game, me, 'rental');
+  return false;
 }
 
 /** 공장을 놀리지 않도록 모자란 재료를 시장에서 사 온다 */

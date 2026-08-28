@@ -13,6 +13,8 @@ function newGame(startCash = 1000, duration = 600) {
   return new Game([{ id: 'a', name: '갑' }, { id: 'b', name: '을' }], { startCash, duration });
 }
 
+const fmt = (n) => Math.round(n * 100) / 100;
+
 /** dt 초 만큼 250ms 단위로 시뮬레이션한다 (서버와 같은 간격) */
 function run(game, seconds) {
   const step = 0.25;
@@ -226,18 +228,25 @@ function run(game, seconds) {
   // 남의 공장은 증설 불가
   assert.ok(!g.upgradeBuilding('b', idx).ok);
 
-  // 최대 단계까지만
-  assert.ok(g.upgradeBuilding('a', idx).ok);
-  assert.strictEqual(tile.level, BUILDINGS.factory.maxLevel);
+  // 최대 단계까지만. 위로 갈수록 증설비가 비싸진다.
+  assert.strictEqual(g.upgradeCost(tile), BUILDINGS.factory.upgradeCost * 2, '단계가 오를수록 비싸다');
+  a.cash = 999999;
+  while (g.upgradeCost(tile) !== null) assert.ok(g.upgradeBuilding('a', idx).ok);
+  const max = BUILDINGS.factory.maxLevel;
+  assert.strictEqual(tile.level, max);
+  assert.ok(max >= 5, `충분히 여러 번 증설할 수 있다 (최대 ${max}단계)`);
   assert.ok(!g.upgradeBuilding('a', idx).ok, '최대 단계를 넘을 수 없다');
 
-  // 실제 생산량도 3배
-  a.inv.iron = 1000;
-  a.inv.oil = 1000;
+  // 실제 생산량도 단계에 비례한다
+  a.inv.iron = 100000;
+  a.inv.oil = 100000;
   g.setRoute('a', idx, null);
   const m0 = a.inv.machine;
   run(g, 10);
-  assert.ok(Math.abs(a.inv.machine - m0 - PRODUCTS.machine.rate * 3 * 10) < 0.05, '3단계는 3배로 생산');
+  assert.ok(
+    Math.abs(a.inv.machine - m0 - PRODUCTS.machine.rate * max * 10) < 0.05,
+    `${max}단계는 ${max}배로 생산`
+  );
 
   // 증설해서 물동량이 커지면 개당 운송비가 싸져 순이익률이 올라간다
   const g2 = newGame(5000);
@@ -285,8 +294,9 @@ function run(game, seconds) {
     // 남의 건물은 증설 불가
     assert.ok(!g.upgradeBuilding('b', idx).ok);
 
-    // 최대 단계까지만
-    while (g.upgradeCost(tile) !== null) g.upgradeBuilding('a', idx);
+    // 최대 단계까지만 (돈이 모자라 멈추지 않도록 넉넉히 쥐여 준다)
+    a.cash = 999999;
+    while (g.upgradeCost(tile) !== null) assert.ok(g.upgradeBuilding('a', idx).ok);
     assert.strictEqual(tile.level, spec.maxLevel);
     assert.ok(!g.upgradeBuilding('a', idx).ok, '최대 단계를 넘을 수 없다');
 
@@ -299,7 +309,68 @@ function run(game, seconds) {
     // 증설비도 매각가에 반영된다
     assert.ok(g.tileValue(idx) > TILE_TYPES[terrain].price + spec.cost * 0.7, '증설한 만큼 값이 오른다');
   }
-  console.log('✓ 자원 건물 증설 (광산·시추소·농장 모두 3단계)');
+  console.log(`✓ 자원 건물 증설 (광산·시추소·농장 모두 ${BUILDINGS.mine.maxLevel}단계)`);
+}
+
+/* ---------------- 임대업 (공급이 늘면 임대료가 내려간다) ---------------- */
+{
+  const g = newGame(20000);
+  const a = g.player('a');
+  const b = g.player('b');
+  const plain = () => g.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
+
+  const i1 = plain();
+  g.buyTile('a', i1);
+  g.build('a', i1, 'rental');
+  const t1 = g.map.tiles[i1];
+  assert.strictEqual(g.rentalSupply(), 1);
+
+  // 재료도 배송도 없이 임대료가 바로 들어온다
+  const rent1 = g.rentPerSec(t1);
+  assert.ok(rent1 > 0, '임대료가 들어온다');
+  const cash0 = a.cash;
+  run(g, 10);
+  assert.ok(a.cash > cash0, '가만히 둬도 현금이 는다');
+
+  // 남이 임대 건물을 더 지으면 내 임대료가 내려간다
+  const i2 = plain();
+  g.buyTile('b', i2);
+  g.build('b', i2, 'rental');
+  assert.strictEqual(g.rentalSupply(), 2);
+  const rent2 = g.rentPerSec(t1);
+  assert.ok(rent2 < rent1, `공급이 늘면 임대료가 내려간다 (${fmt(rent1)} → ${fmt(rent2)})`);
+
+  // 증설하면 그 건물 수입은 늘지만, 공급도 함께 늘어 전체 단가는 더 내려간다
+  const perLevelBefore = g.rentPerSec(t1) / (t1.level || 1);
+  g.upgradeBuilding('a', i1);
+  assert.strictEqual(t1.level, 2);
+  assert.ok(g.rentPerSec(t1) > rent2, '증설하면 그 건물 수입은 는다');
+  assert.ok(g.rentPerSec(t1) / t1.level < perLevelBefore, '레벨당 임대료는 오히려 내려간다');
+
+  // 많이 깔릴수록 1채당 수입이 계속 줄어든다
+  const before = g.rentPerSec(t1);
+  b.cash = 999999;
+  for (let k = 0; k < 12; k++) {
+    const idx = plain();
+    g.buyTile('b', idx);
+    g.build('b', idx, 'rental');
+  }
+  const after = g.rentPerSec(t1);
+  assert.ok(after < before * 0.85, `공급 과잉이면 임대료가 떨어진다 (${fmt(before)} → ${fmt(after)})`);
+
+  // 판 전체 임대 수입은 채수에 비례해 늘지 않는다 (많이 깔수록 남는 게 적다)
+  const supplyNow = g.rentalSupply();
+  let totalRent = 0;
+  for (const t of g.map.tiles) if (t.b === 'rental') totalRent += g.rentPerSec(t);
+  assert.ok(
+    totalRent < BUILDINGS.rental.rent * supplyNow * 0.7,
+    '전체 임대 수입이 채수에 비례하지 않는다 (공급 과잉)'
+  );
+
+  // 임대 건물은 도시 배송도, 생산 품목도 없다
+  assert.ok(!g.setRoute('a', i1, 0).ok);
+  assert.ok(!g.setFactoryMode('a', i1, 'machine').ok);
+  console.log(`✓ 임대업 (1채 ${fmt(rent1)}/초 → 여러 채 깔리면 ${fmt(g.rentPerSec(t1) / t1.level)}/초)`);
 }
 
 /* ---------------- 하이테크 제품 ---------------- */

@@ -107,16 +107,33 @@ const TILE_TYPES = {
 
 /**
  * out = 초당 생산량. 공장은 PRODUCTS/HITECH 의 rate 를 따른다.
- * 모든 건물은 3단계까지 증설할 수 있고, 생산량이 레벨에 비례한다.
- * 증설비는 신축비의 1.2배 — 땅값이 안 드는 대신 조금 비싸다.
+ *
+ * 모든 건물은 MAX_LEVEL 까지 증설할 수 있고 생산량이 레벨에 비례한다.
+ * 증설비는 "신축비의 1.2배 × 현재 레벨" 이라 위로 갈수록 비싸진다.
+ * 생산은 레벨에 비례(선형)하고 비용은 제곱으로 늘기 때문에, 무한정 올리는 것보다
+ * 땅을 더 사는 게 나은 지점이 자연스럽게 생긴다.
  */
+const MAX_LEVEL = 6;
 const BUILDINGS = {
-  mine: { name: '광산', cost: 100, on: 'iron', out: { iron: 0.4 }, maxLevel: 3, upgradeCost: 120 },
-  rig: { name: '시추소', cost: 120, on: 'oil', out: { oil: 0.3 }, maxLevel: 3, upgradeCost: 145 },
-  farm: { name: '농장', cost: 80, on: 'farm', out: { grain: 0.5 }, maxLevel: 3, upgradeCost: 95 },
+  mine: { name: '광산', cost: 100, on: 'iron', out: { iron: 0.4 }, maxLevel: MAX_LEVEL, upgradeCost: 120 },
+  rig: { name: '시추소', cost: 120, on: 'oil', out: { oil: 0.3 }, maxLevel: MAX_LEVEL, upgradeCost: 145 },
+  farm: { name: '농장', cost: 80, on: 'farm', out: { grain: 0.5 }, maxLevel: MAX_LEVEL, upgradeCost: 95 },
   // 공장은 증설하면 물동량이 늘어 기차·항공 같은 대량 운송도 유리해진다
-  factory: { name: '공장', cost: 150, on: 'plain', maxLevel: 3, upgradeCost: 180 },
+  factory: { name: '공장', cost: 150, on: 'plain', maxLevel: MAX_LEVEL, upgradeCost: 180 },
+  // 임대 상가 — 재료도 배송도 필요 없이 그냥 임대료가 들어온다.
+  // 대신 판 전체에 임대 건물이 늘수록 임대료가 떨어진다 (공급 과잉).
+  rental: {
+    name: '임대 상가',
+    cost: 200,
+    on: 'plain',
+    rent: 3.5, // 공급이 없을 때 레벨당 초당 임대료
+    maxLevel: MAX_LEVEL,
+    upgradeCost: 240,
+  },
 };
+
+// 임대 공급이 1 늘 때마다 임대료가 이 비율만큼 희석된다
+const RENT_SATURATION = 0.06;
 
 const CITY_NAMES = ['서울', '부산', '광주', '대전'];
 
@@ -646,6 +663,26 @@ class Game {
     return spec.rate * (tile.level || 1);
   }
 
+  /** 지도 전체의 임대 공급량 (레벨 합) */
+  rentalSupply() {
+    let n = 0;
+    for (const tile of this.map.tiles) {
+      if (tile.b === 'rental' && tile.owner) n += tile.level || 1;
+    }
+    return n;
+  }
+
+  /**
+   * 임대 건물 하나가 지금 벌어들이는 초당 임대료.
+   * 판 전체에 임대 건물이 많을수록 1채당 임대료가 떨어진다.
+   */
+  rentPerSec(tile, supply) {
+    if (!tile || tile.b !== 'rental') return 0;
+    const total = supply === undefined ? this.rentalSupply() : supply;
+    const level = tile.level || 1;
+    return (BUILDINGS.rental.rent * level) / (1 + total * RENT_SATURATION);
+  }
+
   /** 자원 건물의 초당 생산량 (레벨 반영) */
   buildingOutput(tile) {
     const spec = BUILDINGS[tile.b];
@@ -916,7 +953,7 @@ class Game {
       const spec = BUILDINGS[tile.b];
       if (spec.out) {
         for (const [k, r] of Object.entries(this.buildingOutput(tile))) supply[k] = (supply[k] || 0) + r;
-      } else {
+      } else if (tile.b === 'factory') {
         const rate = this.factoryRate(tile);
         for (const [k, n] of Object.entries(MAKEABLE[tile.mode || 'machine'].recipe)) {
           demand[k] = (demand[k] || 0) + n * rate;
@@ -1125,6 +1162,7 @@ class Game {
         for (const [k, r] of Object.entries(this.buildingOutput(tile))) owner.inv[k] += r * dt;
         continue;
       }
+      if (tile.b !== 'factory') continue; // 임대 상가는 아래 임대료에서 따로 처리한다
       const mode = tile.mode || 'machine';
       const prod = MAKEABLE[mode];
       let make = this.factoryRate(tile) * dt;
@@ -1167,6 +1205,16 @@ class Game {
         this.payIncome(owner, unit * qty - cost);
         city.demand[product] = Math.max(0.35, city.demand[product] - qty * 0.06);
         budget -= qty;
+      }
+    }
+
+    // 2-b) 임대료 — 재료도 배송도 필요 없지만, 임대 건물이 늘수록 1채당 수입이 준다
+    const rentSupply = this.rentalSupply();
+    if (rentSupply > 0) {
+      for (const tile of this.map.tiles) {
+        if (tile.b !== 'rental' || !tile.owner) continue;
+        const owner = this.player(tile.owner);
+        if (owner) this.payIncome(owner, this.rentPerSec(tile, rentSupply) * dt);
       }
     }
 
@@ -1306,6 +1354,7 @@ class Game {
   publicState(includeMap = true) {
     const state = {
       elapsed: Math.round(this.elapsed * 10) / 10,
+      rentalSupply: this.rentalSupply(),
       duration: this.settings.duration,
       remaining: Math.max(0, Math.round((this.settings.duration - this.elapsed) * 10) / 10),
       ended: this.ended,
@@ -1357,6 +1406,7 @@ class Game {
         loanInterest: LOAN_INTEREST,
         maxShort: MAX_SHORT,
         resaleRate: RESALE_RATE,
+        rentSaturation: RENT_SATURATION,
       };
     }
     return state;
