@@ -45,6 +45,10 @@ const TAKEOVER_CUT = 0.25; // 경영권 보유자가 가져가는 매출 비율
 const LOAN_INTEREST = 0.0008; // 대출 이자 (초당 0.08% — 10분이면 약 48%)
 const LOAN_MIN_LIMIT = 600; // 자산이 없어도 이만큼은 빌릴 수 있다
 const LOAN_RATIO = 0.5; // 총자산 대비 최대 대출 비율
+// 채권 이자 (초당 0.025% — 10분이면 약 15%). 대출 이자보다 낮게 잡아야
+// 빌려서 채권을 사는 것만으로 차익이 나는 일이 없다. 사업·투자보다는 낮은
+// 수익률로 묶어 두어, 여윳돈을 놀리지 않게 하는 안전 자산 역할만 하게 한다.
+const BOND_INTEREST = 0.00025;
 const MAX_SHORT = 200; // 회사당 공매도 가능 주식 수
 const SHORT_MARGIN = 0.5; // 공매도할 때 필요한 증거금 (거래대금 대비)
 const RESALE_RATE = 0.7; // 건물을 은행에 되팔 때 돌려받는 비율
@@ -60,6 +64,19 @@ const INCOME_MULTIPLE = 100;
 // 이 값이 크면 시세가 몇 초 만에 배로 튄다.
 const MAT_IMPACT = 0.002;
 const MAT_SPREAD = 0.005; // 매수는 비싸게, 매도는 싸게 (왕복 차익 방지)
+
+/**
+ * 연구개발. 단계마다 회사 전체에 붙는 영구 보너스라, 후반에 남는 돈을 넣을 곳이 된다.
+ * 단계가 오를수록 비싸진다 (baseCost × 다음 단계).
+ *
+ * 판매가 보너스는 도시 판매에만 붙인다. 시장 매도에까지 붙이면
+ * 시장에서 사서 그대로 되파는 것만으로 차익이 남는다.
+ */
+const RESEARCH_MAX = 5;
+const RESEARCH = {
+  production: { name: '생산 기술', effect: '모든 생산량', step: 0.08, baseCost: 450 },
+  price: { name: '판매 전략', effect: '도시 판매가', step: 0.08, baseCost: 450 },
+};
 
 const AUTO_BUY_RATE = 20; // 자동 매수로 1초에 채울 수 있는 최대 수량
 const AUTO_BUY_RESERVE = 150; // 자동 매수가 남겨 두는 최소 운영자금
@@ -134,6 +151,17 @@ const BUILDINGS = {
 
 // 임대 공급이 1 늘 때마다 임대료가 이 비율만큼 희석된다
 const RENT_SATURATION = 0.06;
+// 임대 수요는 도시가 커지면서 함께 자란다 — 시간이 갈수록, 그리고 판에
+// 공장·자원 건물이 늘수록 상가를 찾는 사람이 많아진다.
+const RENT_TIME_GROWTH = 0.6; // 게임이 끝날 무렵까지 시간만으로 붙는 수요
+// 산업 건물 1단계당 붙는 수요. 후반이면 판 전체 산업 레벨이 200을 넘기도 해서
+// 값이 조금만 커도 수요가 몇 배로 뛴다.
+const RENT_INDUSTRY_GROWTH = 0.005;
+
+// 원자재는 캐낸 양의 이만큼을 바깥(도시·외부)에서도 사 간다.
+// 생산이 늘면 수요도 함께 늘어야, 증설·연구로 생산성을 올린 게
+// 제 손으로 시세를 무너뜨리는 일이 되지 않는다.
+const WORLD_DEMAND_SHARE = 0.35;
 
 const CITY_NAMES = ['서울', '부산', '광주', '대전'];
 
@@ -309,6 +337,8 @@ class Game {
       shorts: {},
       // autoBuy[자재] = 유지할 수량. 공장이 재료 없이 멈추지 않게 자동으로 사 온다.
       autoBuy: { iron: 0, oil: 0, grain: 0, semi: 0, car: 0 },
+      // 연구개발 단계 (회사 전체에 붙는 영구 보너스)
+      research: { production: 0, price: 0 },
       incomePerSec: 0,
       _incomeAccum: 0, // 1초 단위로 집계해 incomePerSec 로 옮긴다
     }));
@@ -657,10 +687,43 @@ class Game {
     return { ok: true };
   }
 
-  /** 공장의 초당 생산량 (레벨 반영) */
+  /** 공장의 초당 생산량 (증설 레벨 + 연구 보너스 반영) */
   factoryRate(tile) {
     const spec = MAKEABLE[tile.mode || 'machine'];
-    return spec.rate * (tile.level || 1);
+    return spec.rate * (tile.level || 1) * this.researchMult(tile.owner, 'production');
+  }
+
+  /* ---------------------------------------------------------------- 연구개발 */
+
+  /** 다음 단계 연구비. 더 못 올리면 null */
+  researchCost(p, kind) {
+    const spec = RESEARCH[kind];
+    if (!p || !spec) return null;
+    const level = (p.research && p.research[kind]) || 0;
+    if (level >= RESEARCH_MAX) return null;
+    return spec.baseCost * (level + 1);
+  }
+
+  /** 연구 보너스 배수 (1.0 = 보너스 없음) */
+  researchMult(ownerId, kind) {
+    const p = typeof ownerId === 'string' ? this.player(ownerId) : ownerId;
+    if (!p || !p.research) return 1;
+    return 1 + (p.research[kind] || 0) * RESEARCH[kind].step;
+  }
+
+  research(pid, kind) {
+    if (this.ended) return { ok: false, error: '게임이 끝났습니다.' };
+    const p = this.player(pid);
+    const spec = RESEARCH[kind];
+    if (!p || !spec) return { ok: false, error: '잘못된 요청입니다.' };
+    const cost = this.researchCost(p, kind);
+    if (cost === null) return { ok: false, error: `${spec.name}은(는) 최대 단계입니다.` };
+    if (p.cash < cost) return { ok: false, error: `현금이 부족합니다. (필요 ${cost})` };
+    p.cash -= cost;
+    p.research[kind] += 1;
+    const pct = Math.round(p.research[kind] * spec.step * 100);
+    this.pushLog(`🔬 ${p.name} 님이 ${spec.name} ${p.research[kind]}단계를 마쳤습니다 (${spec.effect} +${pct}%)`);
+    return { ok: true };
   }
 
   /** 지도 전체의 임대 공급량 (레벨 합) */
@@ -673,23 +736,39 @@ class Game {
   }
 
   /**
-   * 임대 건물 하나가 지금 벌어들이는 초당 임대료.
-   * 판 전체에 임대 건물이 많을수록 1채당 임대료가 떨어진다.
+   * 임대 수요 배수. 시간이 갈수록, 그리고 판에 공장·자원 건물이 늘수록 커진다.
+   * 산업이 몰린 동네에 상가 수요가 붙는 셈이라, 남들이 공장을 지을수록
+   * 내 임대업도 같이 잘된다.
    */
-  rentPerSec(tile, supply) {
-    if (!tile || tile.b !== 'rental') return 0;
-    const total = supply === undefined ? this.rentalSupply() : supply;
-    const level = tile.level || 1;
-    return (BUILDINGS.rental.rent * level) / (1 + total * RENT_SATURATION);
+  rentalDemand() {
+    let industry = 0;
+    for (const tile of this.map.tiles) {
+      if (!tile.owner || !tile.b || tile.b === 'rental') continue;
+      industry += tile.level || 1;
+    }
+    const grown = Math.min(1, this.elapsed / Math.max(1, this.settings.duration)) * RENT_TIME_GROWTH;
+    return 1 + grown + industry * RENT_INDUSTRY_GROWTH;
   }
 
-  /** 자원 건물의 초당 생산량 (레벨 반영) */
+  /**
+   * 임대 건물 하나가 지금 벌어들이는 초당 임대료.
+   * 수요(시간·산업)가 올려 주고, 공급(임대 건물 총량)이 깎아내린다.
+   */
+  rentPerSec(tile, supply, demand) {
+    if (!tile || tile.b !== 'rental') return 0;
+    const total = supply === undefined ? this.rentalSupply() : supply;
+    const want = demand === undefined ? this.rentalDemand() : demand;
+    const level = tile.level || 1;
+    return (BUILDINGS.rental.rent * level * want) / (1 + total * RENT_SATURATION);
+  }
+
+  /** 자원 건물의 초당 생산량 (증설 레벨 + 연구 보너스 반영) */
   buildingOutput(tile) {
     const spec = BUILDINGS[tile.b];
     if (!spec || !spec.out) return {};
-    const level = tile.level || 1;
+    const mult = (tile.level || 1) * this.researchMult(tile.owner, 'production');
     const out = {};
-    for (const [k, r] of Object.entries(spec.out)) out[k] = r * level;
+    for (const [k, r] of Object.entries(spec.out)) out[k] = r * mult;
     return out;
   }
 
@@ -739,7 +818,8 @@ class Game {
     // 증설한 공장일수록 물동량이 커서 대량 운송 수단이 유리해진다
     const rate = spec.rate * ((tile && tile.level) || 1);
     const transport = transportQuote(dist, rate);
-    const revenue = spec.base * c.mod[useMode] * c.demand[useMode] * (c.boost || 1) * rate;
+    const unit = spec.base * c.mod[useMode] * c.demand[useMode] * (c.boost || 1);
+    const revenue = unit * rate * this.researchMult(tile && tile.owner, 'price');
     return {
       city: cityIndex,
       dist,
@@ -965,12 +1045,12 @@ class Game {
       const origin = TRADABLE[key].base;
       if (MATERIALS[key]) {
         const s = supply[key] || 0;
-        const d = demand[key] || 0;
+        // 바깥 수요 — 캐낸 만큼 도시·외부에서도 사 간다.
+        // 이게 없으면 광산을 증설하는 순간 내 손으로 시세를 무너뜨리게 된다.
+        const d = (demand[key] || 0) + s * WORLD_DEMAND_SHARE;
         // -1(공급 과잉) ~ +1(품귀)
         const pressure = (d - s) / Math.max(0.4, s + d);
-        // 수급 불균형에만 반응한다. 판이 커진다고 값이 계속 오르게 두면
-        // 기준가가 한 방향으로만 흘러 생산하는 쪽 마진만 깎인다.
-        const target = origin * Math.min(1.8, Math.max(0.6, 1 + pressure * 0.8));
+        const target = origin * Math.min(1.6, Math.max(0.7, 1 + pressure * 0.6));
         m.baseline += (target - m.baseline) * 0.05 * dt;
       }
       // 사건 배수는 따로 곱해 둔다 (기준가가 흐르는 중에도 사건이 겹칠 수 있다)
@@ -1197,7 +1277,11 @@ class Game {
         const qty = Math.min(owner.inv[product] || 0, budget);
         if (qty <= 1e-9) continue;
         const unit =
-          PRODUCTS[product].base * city.mod[product] * city.demand[product] * (city.boost || 1);
+          PRODUCTS[product].base *
+          city.mod[product] *
+          city.demand[product] *
+          (city.boost || 1) *
+          this.researchMult(owner, 'price');
         const transport = transportQuote(dist, rate);
         // 운송비는 "초당" 기준이므로 실제로 보낸 양의 비율만큼만 물린다
         const cost = (transport.cost * qty) / rate;
@@ -1208,13 +1292,15 @@ class Game {
       }
     }
 
-    // 2-b) 임대료 — 재료도 배송도 필요 없지만, 임대 건물이 늘수록 1채당 수입이 준다
+    // 2-b) 임대료 — 수요(시간·산업)가 올리고 공급(임대 건물 총량)이 깎는다.
+    //      매출이므로 인수당한 회사면 경영권 몫도 여기서 떼인다.
     const rentSupply = this.rentalSupply();
     if (rentSupply > 0) {
+      const rentDemand = this.rentalDemand();
       for (const tile of this.map.tiles) {
         if (tile.b !== 'rental' || !tile.owner) continue;
         const owner = this.player(tile.owner);
-        if (owner) this.payIncome(owner, this.rentPerSec(tile, rentSupply) * dt);
+        if (owner) this.payIncome(owner, this.rentPerSec(tile, rentSupply, rentDemand) * dt);
       }
     }
 
@@ -1355,6 +1441,7 @@ class Game {
     const state = {
       elapsed: Math.round(this.elapsed * 10) / 10,
       rentalSupply: this.rentalSupply(),
+      rentalDemand: Math.round(this.rentalDemand() * 100) / 100,
       duration: this.settings.duration,
       remaining: Math.max(0, Math.round((this.settings.duration - this.elapsed) * 10) / 10),
       ended: this.ended,
@@ -1381,6 +1468,11 @@ class Game {
           credit: this.creditLimit(p),
           shorts,
           autoBuy: p.autoBuy,
+          research: p.research,
+          researchCost: {
+            production: this.researchCost(p, 'production'),
+            price: this.researchCost(p, 'price'),
+          },
           incomePerSec: p.incomePerSec,
           netWorth: this.netWorth(p),
           controller: (() => {
@@ -1407,6 +1499,8 @@ class Game {
         maxShort: MAX_SHORT,
         resaleRate: RESALE_RATE,
         rentSaturation: RENT_SATURATION,
+        research: RESEARCH,
+        researchMax: RESEARCH_MAX,
       };
     }
     return state;
@@ -1435,6 +1529,8 @@ module.exports = {
   LOAN_MIN_LIMIT,
   UPKEEP_RATE,
   INCOME_MULTIPLE,
+  RESEARCH,
+  RESEARCH_MAX,
   MAX_SHORT,
   RESALE_RATE,
   AUTO_BUY_RATE,

@@ -6,7 +6,7 @@ const assert = require('assert');
 const {
   Game, MATERIALS, PRODUCTS, HITECH, TILE_TYPES, BUILDINGS,
   TOTAL_SHARES, FOUNDER_SHARES, INITIAL_FLOAT, TAKEOVER_SHARES, DIVIDEND_YIELD,
-  transportQuote, generateMap, resourceCounts, MAP_W, MAP_H,
+  transportQuote, generateMap, resourceCounts, RESEARCH, RESEARCH_MAX, MAP_W, MAP_H,
 } = require('../src/game');
 
 function newGame(startCash = 1000, duration = 600) {
@@ -371,6 +371,133 @@ function run(game, seconds) {
   assert.ok(!g.setRoute('a', i1, 0).ok);
   assert.ok(!g.setFactoryMode('a', i1, 'machine').ok);
   console.log(`✓ 임대업 (1채 ${fmt(rent1)}/초 → 여러 채 깔리면 ${fmt(g.rentPerSec(t1) / t1.level)}/초)`);
+}
+
+/* ---------------- 임대 수요는 시간·산업과 함께 자란다 ---------------- */
+{
+  const g = newGame(50000, 600);
+  const base = g.rentalDemand();
+  assert.ok(Math.abs(base - 1) < 0.01, '시작할 땐 수요 배수가 1');
+
+  // 시간이 지나면 수요가 는다
+  run(g, 300);
+  const timeGrown = g.rentalDemand();
+  assert.ok(timeGrown > base, `시간이 지나면 수요가 는다 (${fmt(base)} → ${fmt(timeGrown)})`);
+
+  // 공장·자원 건물이 늘어도 수요가 는다 (임대업은 안 늘려야 순수 효과가 보인다)
+  const before = g.rentalDemand();
+  for (const [terrain, kind] of [['iron', 'mine'], ['oil', 'rig'], ['plain', 'factory']]) {
+    const idx = g.map.tiles.findIndex((t) => t.t === terrain && !t.owner);
+    g.buyTile('a', idx);
+    g.build('a', idx, kind);
+  }
+  const withIndustry = g.rentalDemand();
+  assert.ok(withIndustry > before, `산업이 늘면 임대 수요도 는다 (${fmt(before)} → ${fmt(withIndustry)})`);
+
+  // 임대 건물 자체는 수요를 늘리지 않는다 (공급만 늘린다)
+  const d0 = g.rentalDemand();
+  const ri = g.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
+  g.buyTile('a', ri);
+  g.build('a', ri, 'rental');
+  assert.ok(Math.abs(g.rentalDemand() - d0) < 1e-9, '임대 건물은 수요가 아니라 공급이다');
+
+  // 후반에도 수요 배수가 터무니없이 커지지는 않는다
+  assert.ok(g.rentalDemand() < 6, `수요 배수가 과하지 않다 (${fmt(g.rentalDemand())})`);
+  console.log(`✓ 임대 수요 성장 (시작 1 → 시간 ${fmt(timeGrown)} → 산업까지 ${fmt(withIndustry)})`);
+}
+
+/* ---------------- 임대 수입도 경영권 몫의 대상이다 ---------------- */
+{
+  const g = newGame(100000);
+  const a = g.player('a');
+  const b = g.player('b');
+
+  const idx = g.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
+  g.buyTile('b', idx);
+  g.build('b', idx, 'rental');
+
+  // 경영권이 없을 때 b 가 버는 속도
+  const bCash0 = b.cash;
+  run(g, 10);
+  const solo = b.cash - bCash0;
+  assert.ok(solo > 0, '임대료가 들어온다');
+
+  // a 가 b 를 인수하면 임대 수입의 일부가 a 에게 간다
+  g.stocks.b.float += g.stocks.b.unissued;
+  g.stocks.b.unissued = 0;
+  g.stockTrade('a', { company: 'b', qty: TAKEOVER_SHARES, side: 'buy' });
+  assert.strictEqual(g.controllerOf('b').id, 'a');
+
+  const aCash0 = a.cash;
+  const bCash1 = b.cash;
+  run(g, 10);
+  assert.ok(a.cash > aCash0, '인수자에게 임대 수입 몫이 들어온다');
+  assert.ok(b.cash - bCash1 < solo, '인수당한 쪽은 그만큼 덜 남는다');
+  console.log('✓ 임대 수입도 경영권 몫 대상');
+}
+
+/* ---------------- 연구개발 ---------------- */
+{
+  const g = newGame(100000);
+  const a = g.player('a');
+
+  assert.strictEqual(a.research.production, 0);
+  assert.strictEqual(g.researchMult('a', 'production'), 1, '연구 전에는 보너스가 없다');
+
+  // 생산 연구 — 자원 건물과 공장 모두 생산량이 는다
+  const mineIdx = g.map.tiles.findIndex((t) => t.t === 'iron' && !t.owner);
+  g.buyTile('a', mineIdx);
+  g.build('a', mineIdx, 'mine');
+  const facIdx = g.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
+  g.buyTile('a', facIdx);
+  g.build('a', facIdx, 'factory');
+  const out0 = g.buildingOutput(g.map.tiles[mineIdx]).iron;
+  const rate0 = g.factoryRate(g.map.tiles[facIdx]);
+
+  const cost1 = g.researchCost(a, 'production');
+  assert.ok(cost1 > 0);
+  const cash0 = a.cash;
+  assert.ok(g.research('a', 'production').ok);
+  assert.strictEqual(a.cash, cash0 - cost1);
+  assert.strictEqual(a.research.production, 1);
+
+  const step = RESEARCH.production.step;
+  assert.ok(
+    Math.abs(g.buildingOutput(g.map.tiles[mineIdx]).iron - out0 * (1 + step)) < 1e-9,
+    `자원 생산량이 정확히 ${Math.round(step * 100)}% 는다`
+  );
+  assert.ok(Math.abs(g.factoryRate(g.map.tiles[facIdx]) - rate0 * (1 + step)) < 1e-9, '공장 생산량도 는다');
+
+  // 단계가 오를수록 비싸진다
+  assert.ok(g.researchCost(a, 'production') > cost1, '다음 단계가 더 비싸다');
+
+  // 판매 연구 — 도시 판매가가 오른다
+  const q0 = g.quoteRoute(facIdx, 0, 'machine').revenue;
+  assert.ok(g.research('a', 'price').ok);
+  const q1 = g.quoteRoute(facIdx, 0, 'machine').revenue;
+  assert.ok(q1 > q0, `도시 판매가가 오른다 (${fmt(q0)} → ${fmt(q1)})`);
+
+  // 최대 단계까지만
+  let guard = 0;
+  while (g.researchCost(a, 'production') !== null && guard++ < 20) {
+    assert.ok(g.research('a', 'production').ok);
+  }
+  assert.strictEqual(a.research.production, RESEARCH_MAX);
+  assert.ok(!g.research('a', 'production').ok, '최대 단계를 넘을 수 없다');
+  assert.ok(
+    Math.abs(g.researchMult('a', 'production') - (1 + RESEARCH_MAX * step)) < 1e-9,
+    `최대 ${Math.round(RESEARCH_MAX * step * 100)}% 까지 오른다`
+  );
+
+  // 남의 회사 생산량은 그대로다
+  const bIdx = g.map.tiles.findIndex((t) => t.t === 'iron' && !t.owner);
+  g.buyTile('b', bIdx);
+  g.build('b', bIdx, 'mine');
+  assert.ok(
+    g.buildingOutput(g.map.tiles[bIdx]).iron < g.buildingOutput(g.map.tiles[mineIdx]).iron,
+    '연구 보너스는 그 회사에만 붙는다'
+  );
+  console.log(`✓ 연구개발 (생산 ${a.research.production}단계, 판매 ${a.research.price}단계)`);
 }
 
 /* ---------------- 하이테크 제품 ---------------- */

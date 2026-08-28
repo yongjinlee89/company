@@ -128,6 +128,7 @@ io.on('connection', (socket) => {
   socket.on('setFactoryMode', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.setFactoryMode(pid, p.idx, p.mode))));
   socket.on('setRoute', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.setRoute(pid, p.idx, p.city))));
   socket.on('upgrade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.upgradeBuilding(pid, p.idx))));
+  socket.on('research', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.research(pid, p.kind))));
   socket.on('trade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.trade(pid, p))));
   socket.on('setAutoBuy', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.setAutoBuy(pid, p.mat, p.target))));
   socket.on('stockTrade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.stockTrade(pid, p))));

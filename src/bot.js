@@ -119,17 +119,20 @@ function tryAcquire(game, me, kind) {
   const spec = BUILDINGS[kind];
   const terrain = spec.on;
 
-  // 임대 상가는 도시에서 멀어도 상관없으므로 아무 빈 평지나 쓴다
+  // 설비가 어느 정도 깔린 뒤에는 여유 자금을 남긴다.
+  // 안 그러면 매번 현금을 0 까지 써 버려서 빚도 못 갚고 연구도 못 한다.
+  const reserve = me._reserve || 0;
+
   const own = myTiles(game, me.id).find((t) => t.tile.t === terrain && !t.tile.b);
   if (own) {
-    if (me.cash < spec.cost) return false;
+    if (me.cash < spec.cost + reserve) return false;
     const built = game.build(me.id, own.idx, kind).ok;
     if (built && kind === 'factory') applyFocus(game, me, own.idx);
     return built;
   }
 
   const tilePrice = TILE_TYPES[terrain].price;
-  if (me.cash < tilePrice + spec.cost) return false;
+  if (me.cash < tilePrice + spec.cost + reserve) return false;
 
   let best = null;
   for (let i = 0; i < game.map.tiles.length; i++) {
@@ -186,7 +189,7 @@ function tryUpgrade(game, me, only) {
     if (!tile.b) continue;
     if (only && tile.b !== only) continue;
     const cost = game.upgradeCost(tile);
-    if (cost === null || me.cash < cost) continue;
+    if (cost === null || me.cash < cost + (me._reserve || 0)) continue;
     const level = tile.level || 1;
     const d = nearestCityDist(game, idx);
     // 낮은 단계부터, 같은 단계면 도시에 가까운(운송비 싼) 쪽부터
@@ -326,13 +329,30 @@ function playStocks(game, me) {
 }
 
 /**
+ * 연구개발 — 설비를 어느 정도 갖춘 뒤 남는 돈으로 올린다.
+ * 회사 전체에 붙는 보너스라 설비가 많을수록 이득이 크다.
+ */
+function doResearch(game, me) {
+  if (me.debt > 0) return;
+  // 설비가 어느 정도 깔린 뒤라야 회사 전체 보너스가 값어치를 한다.
+  // 이 시점부터는 건물 하나 더 짓는 것보다 연구를 먼저 친다.
+  const buildings = myTiles(game, me.id).filter((t) => t.tile.b).length;
+  if (buildings < 6) return;
+  const options = ['production', 'price']
+    .map((kind) => ({ kind, cost: game.researchCost(me, kind) }))
+    .filter((o) => o.cost !== null && o.cost + 300 <= me.cash)
+    .sort((a, b) => a.cost - b.cost);
+  if (options.length) game.research(me.id, options[0].kind);
+}
+
+/**
  * 대출 — 초반에 설비를 깔 돈이 없을 때만 쓴다.
  * 이자가 계속 나가므로 여유가 생기면 갚는다.
  */
 function manageLoan(game, me) {
-  // 돈이 남으면 먼저 빚부터 정리
-  if (me.debt > 0 && me.cash > me.debt + 600) {
-    game.repay(me.id, Math.floor(me.debt));
+  // 돈이 남으면 먼저 빚부터 정리. 이자가 계속 나가므로 조금이라도 갚는다.
+  if (me.debt > 0 && me.cash > 400) {
+    game.repay(me.id, Math.min(Math.ceil(me.debt), Math.floor(me.cash - 250)));
     return;
   }
   // 아직 공장이 없고 현금이 말랐으면 빌려서라도 시작한다
@@ -358,9 +378,14 @@ function think(game, botId) {
   if (!me || game.ended) return false;
   if (!me._focus) me._focus = pickFocus(game);
 
+  // 설비가 갖춰지면 무작정 더 짓기보다 빚 정리와 연구에 쓸 돈을 남긴다
+  const buildings = myTiles(game, me.id).filter((t) => t.tile.b).length;
+  me._reserve = buildings >= 6 ? 800 : 0;
+
   let mapChanged = checkRoutes(game, me);
   sellSurplus(game, me);
   manageLoan(game, me);
+  doResearch(game, me);
   if (goHitech(game, me)) mapChanged = true;
   if (buildUp(game, me)) mapChanged = true;
   buyInputs(game, me);

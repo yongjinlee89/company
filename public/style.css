@@ -834,6 +834,20 @@ button.danger {
   flex-shrink: 0;
 }
 
+.rnd-card {
+  border-color: #4a6b5a;
+}
+
+.rnd-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.rnd-card .loan-row button {
+  flex: 0 0 auto;
+  min-width: 4.5em;
+}
+
 .holders {
   line-height: 1.5;
 }

@@ -562,6 +562,14 @@ function nameOf(key) {
   return spec ? spec.name : key;
 }
 
+/** 연구 보너스 배수 (서버의 researchMult 와 같은 계산) */
+function researchMult(kind) {
+  const my = me();
+  const spec = S.game.constants.research;
+  if (!my || !my.research || !spec || !spec[kind]) return 1;
+  return 1 + (my.research[kind] || 0) * spec[kind].step;
+}
+
 /** 공장이 만들 수 있는 모든 품목 (도시 배송 + 하이테크) */
 function makeable() {
   const C = S.game.constants;
@@ -597,9 +605,11 @@ function routeQuote(idx, ci, mode) {
   const x = idx % g.map.w;
   const y = Math.floor(idx / g.map.w);
   const dist = Math.max(1, Math.max(Math.abs(x - c.x), Math.abs(y - c.y)));
-  const rate = spec.rate * (tile.level || 1);
+  const rate = spec.rate * (tile.level || 1) * researchMult('production');
   const t = transportQuote(dist, rate);
-  const revenue = spec.base * c.mod[mode] * c.demand[mode] * rate;
+  // 사건으로 붙는 도시 배수와 판매 연구 보너스까지 반영한다
+  const unit = spec.base * c.mod[mode] * c.demand[mode] * (c.boost || 1);
+  const revenue = unit * rate * researchMult('price');
   return { dist, rate, transport: t, revenue, net: revenue - t.cost };
 }
 
@@ -728,10 +738,15 @@ function buildTilePanel(panel, tile, live) {
   if (tile.owner === ME && tile.b && C.buildings[tile.b].out) {
     const spec = C.buildings[tile.b];
     const level = tile.level || 1;
-    const out = Object.entries(spec.out)
-      .map(([k, r]) => `${nameOf(k)} +${Math.round(r * level * 100) / 100}/초`)
-      .join(', ');
-    panel.appendChild(el('div', 'tp-row', `⛏️ ${spec.name} ${level}단계 · ${out}`));
+    const row = el('div', 'tp-row');
+    panel.appendChild(row);
+    live.push(() => {
+      const mult = level * researchMult('production');
+      const out = Object.entries(spec.out)
+        .map(([k, r]) => `${nameOf(k)} +${Math.round(r * mult * 100) / 100}/초`)
+        .join(', ');
+      row.textContent = `⛏️ ${spec.name} ${level}단계 · ${out}`;
+    });
     upgradeButton();
   }
 
@@ -771,8 +786,8 @@ function buildTilePanel(panel, tile, live) {
         const recipe = Object.entries(p.recipe)
           .map(([k, n]) => `${nameOf(k)}×${n}`)
           .join('+');
-        // 0.18 과 0.22 가 똑같이 "0.2" 로 보이지 않도록 두 자리까지 쓴다
-        const rate = Math.round(p.rate * level * 100) / 100;
+        // 0.18 과 0.22 가 똑같이 "0.2" 로 보이지 않도록 두 자리까지 쓴다 (연구 보너스 포함)
+        const rate = Math.round(p.rate * level * researchMult('production') * 100) / 100;
         // 재료는 툴팁으로 뺀다 — 한 줄에 들어가야 패널이 두꺼워지지 않는다
         const btn = el('button', 'chip' + (mode === key ? ' on' : ''), `${p.name} ${rate}/초`);
         btn.title = `재료 ${recipe}`;
@@ -1255,6 +1270,33 @@ function renderCompany() {
   renderPane('company', 'company|' + order.join(',') + '|' + !!me() + '|' + g.ended, (live) => {
     const box = $('#tab-company');
     box.innerHTML = '';
+
+    // 연구개발 — 회사 전체에 붙는 영구 보너스. 후반에 남는 돈을 넣는 곳.
+    if (me() && !g.ended) {
+      const card = el('div', 'company-card rnd-card');
+      card.appendChild(el('b', '', '🔬 연구개발'));
+      for (const [kind, spec] of Object.entries(g.constants.research)) {
+        const row = el('div', 'loan-row');
+        const label = el('span', 'small rnd-label');
+        const btn = el('button', 'buy', '연구');
+        btn.addEventListener('click', () => emit('research', { kind }));
+        row.appendChild(label);
+        row.appendChild(btn);
+        card.appendChild(row);
+        live.push(() => {
+          const my = me();
+          if (!my) return;
+          const lv = (my.research && my.research[kind]) || 0;
+          const cost = my.researchCost ? my.researchCost[kind] : null;
+          const pct = Math.round(lv * spec.step * 100);
+          label.textContent = `${spec.name} ${lv}/${g.constants.researchMax} · ${spec.effect} +${pct}%`;
+          btn.textContent = cost === null ? '최대' : `${fmt(cost)}`;
+          btn.disabled = cost === null || my.cash < cost;
+          btn.title = cost === null ? '' : `다음 단계: ${spec.effect} +${Math.round(spec.step * 100)}%`;
+        });
+      }
+      box.appendChild(card);
+    }
 
     // 대출 — 초반에 설비를 깔 돈이 모자랄 때 쓴다. 금액은 100단위 버튼으로 고른다.
     if (me() && !g.ended) {

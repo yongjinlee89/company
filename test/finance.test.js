@@ -281,10 +281,15 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   const total0 = s.float + s.npc + s.unissued + FOUNDER_SHARES;
   assert.strictEqual(total0, TOTAL_SHARES, '주식 총수가 맞는다');
 
-  // 시간이 지나며 상장되고, 외인·기관이 계속 사고판다
-  run(g, 60);
+  // 시간이 지나며 상장되고, 외인·기관이 계속 사고판다.
+  // 체결은 확률적이라 특정 1초가 비어 있을 수 있으므로 여러 초를 지켜본다.
+  let peakVolume = 0;
+  for (let i = 0; i < 60; i++) {
+    run(g, 1);
+    peakVolume = Math.max(peakVolume, s.volume);
+  }
   assert.ok(s.unissued < total0 - FOUNDER_SHARES - INITIAL_FLOAT, '시간이 지나면 상장된다');
-  assert.ok(s.volume > 0, '외인·기관이 거래한다');
+  assert.ok(peakVolume > 0, '외인·기관이 거래한다');
   assert.ok(s.npc > 0 || s.float > INITIAL_FLOAT, '물량이 시장에서 오간다');
 
   // 총수는 언제나 보존된다
@@ -294,7 +299,7 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   // 상장이 끝나면 미발행이 0 이 된다
   run(g, 500);
   assert.strictEqual(g.stocks.a.unissued, 0, '게임 후반이면 전량 상장된다');
-  console.log(`✓ 점진 상장 + 외인·기관 거래 (초당 ${g.stocks.a.volume}주)`);
+  console.log(`✓ 점진 상장 + 외인·기관 거래 (최대 초당 ${peakVolume}주)`);
 }
 
 /* ---------------- 주가가 오르내린다 ---------------- */
