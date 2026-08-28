@@ -16,6 +16,7 @@ const {
   HITECH,
   MAKEABLE,
   BUILDINGS,
+  RESEARCH,
   TILE_TYPES,
   TOTAL_SHARES,
   TAKEOVER_SHARES,
@@ -55,8 +56,9 @@ function inputNeed(game, me) {
   for (const { tile } of myTiles(game, me.id)) {
     if (tile.b !== 'factory') continue;
     const rate = game.factoryRate(tile);
+    const eff = game.researchMult(me, 'efficiency'); // 공정 효율만큼 덜 쓴다
     for (const [k, n] of Object.entries(MAKEABLE[tile.mode || 'machine'].recipe)) {
-      need[k] = (need[k] || 0) + n * rate;
+      need[k] = (need[k] || 0) + n * eff * rate;
     }
   }
   return need;
@@ -324,7 +326,7 @@ function doResearch(game, me) {
   // 이 시점부터는 건물 하나 더 짓는 것보다 연구를 먼저 친다.
   const buildings = myTiles(game, me.id).filter((t) => t.tile.b).length;
   if (buildings < 6) return;
-  const options = ['production', 'price']
+  const options = Object.keys(RESEARCH)
     .map((kind) => ({ kind, cost: game.researchCost(me, kind) }))
     .filter((o) => o.cost !== null && o.cost + 300 <= me.cash)
     .sort((a, b) => a.cost - b.cost);

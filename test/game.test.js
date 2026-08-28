@@ -500,6 +500,74 @@ function run(game, seconds) {
   console.log(`✓ 연구개발 (생산 ${a.research.production}단계, 판매 ${a.research.price}단계)`);
 }
 
+/* ---------------- 깎아 주는 연구 (운송비·재료·유지비) ---------------- */
+{
+  // step 이 음수인 연구는 비용을 깎는다
+  for (const kind of ['logistics', 'efficiency', 'upkeep']) {
+    assert.ok(RESEARCH[kind], `${kind} 연구가 있어야 한다`);
+    assert.ok(RESEARCH[kind].step < 0, `${kind} 는 깎아 주는 연구다`);
+  }
+
+  // 물류 — 운송비가 내려가 순이익이 오른다
+  const g = newGame(100000);
+  const a = g.player('a');
+  const idx = g.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
+  g.buyTile('a', idx);
+  g.build('a', idx, 'factory');
+  const far = g.cities.map((_, ci) => ({ ci, d: g.distToCity(idx, ci) })).sort((x, y) => y.d - x.d)[0].ci;
+  const q0 = g.quoteRoute(idx, far, 'machine');
+  assert.ok(g.research('a', 'logistics').ok);
+  const q1 = g.quoteRoute(idx, far, 'machine');
+  assert.ok(q1.transport.cost < q0.transport.cost, `운송비가 내려간다 (${q0.transport.cost} → ${q1.transport.cost})`);
+  assert.ok(q1.net > q0.net, '그만큼 순이익이 오른다');
+
+  // 공정 효율 — 같은 재료로 더 오래 돌아간다
+  const g2 = newGame(100000);
+  const p2 = g2.player('a');
+  const i2 = g2.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
+  g2.buyTile('a', i2);
+  g2.build('a', i2, 'factory');
+  g2.setRoute('a', i2, null);
+  p2.inv.iron = 100;
+  p2.inv.oil = 100;
+  run(g2, 20);
+  const usedPlain = 100 - p2.inv.iron;
+
+  const g3 = newGame(100000);
+  const p3 = g3.player('a');
+  const i3 = g3.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
+  g3.buyTile('a', i3);
+  g3.build('a', i3, 'factory');
+  g3.setRoute('a', i3, null);
+  assert.ok(g3.research('a', 'efficiency').ok);
+  p3.inv.iron = 100;
+  p3.inv.oil = 100;
+  run(g3, 20);
+  const usedEff = 100 - p3.inv.iron;
+  assert.ok(usedEff < usedPlain, `재료를 덜 쓴다 (${fmt(usedPlain)} → ${fmt(usedEff)})`);
+  assert.ok(Math.abs(p3.inv.machine - p2.inv.machine) < 0.01, '만든 양은 같다');
+
+  // 설비 관리 — 유지비가 줄어 현금이 덜 샌다
+  const g4 = newGame(100000);
+  const i4 = g4.map.tiles.findIndex((t) => t.t === 'iron' && !t.owner);
+  g4.buyTile('a', i4);
+  g4.build('a', i4, 'mine');
+  const c4 = g4.player('a').cash;
+  run(g4, 30);
+  const feePlain = c4 - g4.player('a').cash;
+
+  const g5 = newGame(100000);
+  const i5 = g5.map.tiles.findIndex((t) => t.t === 'iron' && !t.owner);
+  g5.buyTile('a', i5);
+  g5.build('a', i5, 'mine');
+  assert.ok(g5.research('a', 'upkeep').ok);
+  const c5 = g5.player('a').cash;
+  run(g5, 30);
+  const feeCut = c5 - g5.player('a').cash;
+  assert.ok(feeCut < feePlain, `유지비가 줄어든다 (${fmt(feePlain)} → ${fmt(feeCut)})`);
+  console.log('✓ 깎아 주는 연구 (운송비·재료 소비·유지비)');
+}
+
 /* ---------------- 하이테크 제품 ---------------- */
 {
   const g = newGame(20000);
@@ -544,13 +612,9 @@ function run(game, seconds) {
   assert.ok(a.cash > cash0);
   assert.ok(sell.total / stock > PRODUCTS.machine.base, '반도체는 기계보다 개당 비싸다');
 
-  // 자동차는 반도체를 재료로 쓴다 (사슬이 이어진다)
-  assert.ok(HITECH.car.recipe.semi > 0, '자동차는 반도체가 필요하다');
-  assert.ok(HITECH.car.base > HITECH.semi.base, '뒷단계일수록 값이 비싸다');
   assert.ok(HITECH.semi.base > PRODUCTS.machine.base, '하이테크가 도시 제품보다 비싸다');
 
-  // 자동차는 반도체를 쓴다. 반도체도 하이테크라 저절로 재고로 쌓이므로,
-  // 공장 둘만 세워 두면 손대지 않아도 사슬이 굴러간다.
+  // 광산·시추소만 있으면 손대지 않아도 계속 돌아간다 (노선 조작이 필요 없다)
   const g2 = newGame(30000);
   const p2 = g2.player('a');
   const plain = () => g2.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
@@ -558,19 +622,13 @@ function run(game, seconds) {
   g2.buyTile('a', semiIdx);
   g2.build('a', semiIdx, 'factory');
   g2.setFactoryMode('a', semiIdx, 'semi');
-  const carIdx = plain();
-  g2.buyTile('a', carIdx);
-  g2.build('a', carIdx, 'factory');
-  g2.setFactoryMode('a', carIdx, 'car');
   p2.inv.iron = 5000;
   p2.inv.oil = 5000;
 
   run(g2, 120);
-  assert.ok(p2.inv.car > 0.5, `자동차가 저절로 만들어진다 (${p2.inv.car.toFixed(1)}개)`);
-  assert.ok(!g2.map.tiles[carIdx].idle, '반도체가 알아서 공급되어 자동차 공장이 멈추지 않는다');
-  console.log(
-    `✓ 하이테크 (원자재로 직접 생산, 반도체 ${HITECH.semi.base} / 자동차 ${HITECH.car.base})`
-  );
+  assert.ok(p2.inv.semi > 1, `반도체가 저절로 쌓인다 (${p2.inv.semi.toFixed(1)}개)`);
+  assert.ok(!g2.map.tiles[semiIdx].idle, '원자재만 있으면 공장이 멈추지 않는다');
+  console.log(`✓ 하이테크 (원자재로 직접 생산, 반도체 ${HITECH.semi.base})`);
 }
 
 /* ---------------- 주가는 본업 가치만 따라간다 ---------------- */

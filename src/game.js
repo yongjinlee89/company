@@ -73,9 +73,13 @@ const MAT_SPREAD = 0.005; // 매수는 비싸게, 매도는 싸게 (왕복 차�
  * 시장에서 사서 그대로 되파는 것만으로 차익이 남는다.
  */
 const RESEARCH_MAX = 5;
+// step 이 음수면 깎아 주는 연구다 (배수 = 1 + 단계 × step)
 const RESEARCH = {
   production: { name: '생산 기술', effect: '모든 생산량', step: 0.08, baseCost: 450 },
   price: { name: '판매 전략', effect: '도시 판매가', step: 0.08, baseCost: 450 },
+  logistics: { name: '물류 최적화', effect: '운송비', step: -0.1, baseCost: 400 },
+  efficiency: { name: '공정 효율', effect: '재료 소비', step: -0.06, baseCost: 500 },
+  upkeep: { name: '설비 관리', effect: '건물 유지비', step: -0.12, baseCost: 350 },
 };
 
 const AUTO_BUY_RATE = 20; // 자동 매수로 1초에 채울 수 있는 최대 수량
@@ -99,11 +103,9 @@ const PRODUCTS = {
  * 재료는 원자재를 바로 쓴다. 예전에는 기계를 재료로 삼았는데, 기계 공장은
  * 만드는 족족 도시로 팔려 나가서 재료를 모으려면 노선을 꺼 둬야 했다.
  * 그 한 단계가 지나치게 번거로워서 원자재로 바꿨다.
- * (자동차가 쓰는 반도체는 하이테크라 어차피 재고로 쌓이므로 손이 안 간다)
  */
 const HITECH = {
   semi: { name: '반도체', base: 200, recipe: { iron: 1, oil: 4 }, rate: 0.07 },
-  car: { name: '자동차', base: 520, recipe: { iron: 3, semi: 1 }, rate: 0.035 },
 };
 
 /** 공장이 만들 수 있는 모든 것 */
@@ -340,7 +342,7 @@ class Game {
       name: info.name,
       color: PLAYER_COLORS[i % PLAYER_COLORS.length],
       cash: settings.startCash,
-      inv: { iron: 0, oil: 0, grain: 0, machine: 0, food: 0, semi: 0, car: 0 },
+      inv: { iron: 0, oil: 0, grain: 0, machine: 0, food: 0, semi: 0 },
       // shares[대상 회사 id] = 보유 주식 수
       shares: { [info.id]: FOUNDER_SHARES },
       debt: 0,
@@ -348,9 +350,9 @@ class Game {
       // shorts[대상 회사 id] = { shares, proceeds } — 공매도 미결제 잔고
       shorts: {},
       // autoBuy[자재] = 유지할 수량. 공장이 재료 없이 멈추지 않게 자동으로 사 온다.
-      autoBuy: { iron: 0, oil: 0, grain: 0, semi: 0, car: 0 },
+      autoBuy: { iron: 0, oil: 0, grain: 0, semi: 0 },
       // 연구개발 단계 (회사 전체에 붙는 영구 보너스)
-      research: { production: 0, price: 0 },
+      research: { production: 0, price: 0, logistics: 0, efficiency: 0, upkeep: 0 },
       incomePerSec: 0,
       _incomeAccum: 0, // 1초 단위로 집계해 incomePerSec 로 옮긴다
     }));
@@ -767,7 +769,10 @@ class Game {
     p.cash -= cost;
     p.research[kind] += 1;
     const pct = Math.round(p.research[kind] * spec.step * 100);
-    this.pushLog(`🔬 ${p.name} 님이 ${spec.name} ${p.research[kind]}단계를 마쳤습니다 (${spec.effect} +${pct}%)`);
+    this.pushLog(
+      `🔬 ${p.name} 님이 ${spec.name} ${p.research[kind]}단계를 마쳤습니다 ` +
+        `(${spec.effect} ${pct > 0 ? '+' : ''}${pct}%)`
+    );
     return { ok: true };
   }
 
@@ -862,9 +867,11 @@ class Game {
     const c = this.cities[cityIndex];
     // 증설한 공장일수록 물동량이 커서 대량 운송 수단이 유리해진다
     const rate = spec.rate * ((tile && tile.level) || 1);
+    const owner = tile && tile.owner;
     const transport = transportQuote(dist, rate);
+    transport.cost = Math.round(transport.cost * this.researchMult(owner, 'logistics') * 100) / 100;
     const unit = spec.base * c.mod[useMode] * c.demand[useMode] * (c.boost || 1);
-    const revenue = unit * rate * this.researchMult(tile && tile.owner, 'price');
+    const revenue = unit * rate * this.researchMult(owner, 'price');
     return {
       city: cityIndex,
       dist,
@@ -1309,13 +1316,15 @@ class Game {
       if (tile.b !== 'factory') continue; // 임대 상가는 아래 임대료에서 따로 처리한다
       const mode = tile.mode || 'machine';
       const prod = MAKEABLE[mode];
+      // 공정 효율 연구가 재료 소비를 깎아 준다
+      const eff = this.researchMult(owner, 'efficiency');
       let make = this.factoryRate(tile) * dt;
       for (const [k, n] of Object.entries(prod.recipe)) {
-        make = Math.min(make, (owner.inv[k] || 0) / n);
+        make = Math.min(make, (owner.inv[k] || 0) / (n * eff));
       }
       tile.idle = make <= 1e-9;
       if (tile.idle) continue;
-      for (const [k, n] of Object.entries(prod.recipe)) owner.inv[k] -= n * make;
+      for (const [k, n] of Object.entries(prod.recipe)) owner.inv[k] -= n * eff * make;
       owner.inv[mode] += make;
     }
 
@@ -1347,8 +1356,9 @@ class Game {
           (city.boost || 1) *
           this.researchMult(owner, 'price');
         const transport = transportQuote(dist, rate);
-        // 운송비는 "초당" 기준이므로 실제로 보낸 양의 비율만큼만 물린다
-        const cost = (transport.cost * qty) / rate;
+        // 운송비는 "초당" 기준이므로 실제로 보낸 양의 비율만큼만 물린다.
+        // 물류 최적화 연구가 이걸 깎아 준다.
+        const cost = (transport.cost * qty * this.researchMult(owner, 'logistics')) / rate;
         owner.inv[product] -= qty;
         this.payIncome(owner, unit * qty - cost);
         city.demand[product] = Math.max(0.35, city.demand[product] - qty * 0.06);
@@ -1390,7 +1400,9 @@ class Game {
       const owner = this.player(tile.owner);
       if (!owner) continue;
       const spec = BUILDINGS[tile.b];
-      const fee = spec.cost * (tile.level || 1) * UPKEEP_RATE * dt;
+      // 설비 관리 연구가 유지비를 깎아 준다
+      const fee =
+        spec.cost * (tile.level || 1) * UPKEEP_RATE * this.researchMult(owner, 'upkeep') * dt;
       owner.cash -= fee;
       owner._incomeAccum -= fee;
     }
@@ -1542,10 +1554,10 @@ class Game {
           shorts,
           autoBuy: p.autoBuy,
           research: p.research,
-          researchCost: {
-            production: this.researchCost(p, 'production'),
-            price: this.researchCost(p, 'price'),
-          },
+          // 연구 종류가 늘어도 빠지지 않도록 목록에서 만든다
+          researchCost: Object.fromEntries(
+            Object.keys(RESEARCH).map((kind) => [kind, this.researchCost(p, kind)])
+          ),
           incomePerSec: p.incomePerSec,
           netWorth: this.netWorth(p),
           controller: (() => {

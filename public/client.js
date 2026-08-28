@@ -287,10 +287,9 @@ const INV_LABELS = {
   machine: ['⚙️', '기계'],
   food: ['🍞', '식품'],
   semi: ['💾', '반도체'],
-  car: ['🚗', '자동차'],
 };
 // 하이테크는 손대기 전까지 상단바를 넓히지 않도록 필요할 때만 보여준다
-const INV_OPTIONAL = ['semi', 'car'];
+const INV_OPTIONAL = ['semi'];
 const invNums = {};
 const invItems = {};
 
@@ -607,10 +606,11 @@ function routeQuote(idx, ci, mode) {
   const dist = Math.max(1, Math.max(Math.abs(x - c.x), Math.abs(y - c.y)));
   const rate = spec.rate * (tile.level || 1) * researchMult('production');
   const t = transportQuote(dist, rate);
-  // 사건으로 붙는 도시 배수와 판매 연구 보너스까지 반영한다
+  // 물류 연구가 운송비를, 판매 연구가 판매가를 바꾼다. 사건 배수도 함께 반영.
+  const cost = t.cost * researchMult('logistics');
   const unit = spec.base * c.mod[mode] * c.demand[mode] * (c.boost || 1);
   const revenue = unit * rate * researchMult('price');
-  return { dist, rate, transport: t, revenue, net: revenue - t.cost };
+  return { dist, rate, transport: { name: t.name, cost }, revenue, net: revenue - cost };
 }
 
 function renderTilePanel() {
@@ -1288,11 +1288,15 @@ function renderCompany() {
           if (!my) return;
           const lv = (my.research && my.research[kind]) || 0;
           const cost = my.researchCost ? my.researchCost[kind] : null;
+          // step 이 음수인 연구(운송비·유지비 등)는 깎아 주는 것이므로 부호를 그대로 보여준다
           const pct = Math.round(lv * spec.step * 100);
-          label.textContent = `${spec.name} ${lv}/${g.constants.researchMax} · ${spec.effect} +${pct}%`;
+          const sign = (n) => (n > 0 ? '+' : '') + n + '%';
+          label.textContent = `${spec.name} ${lv}/${g.constants.researchMax} · ${spec.effect} ${sign(pct)}`;
+          label.classList.toggle('rnd-on', lv > 0);
           btn.textContent = cost === null ? '최대' : `${fmt(cost)}`;
           btn.disabled = cost === null || my.cash < cost;
-          btn.title = cost === null ? '' : `다음 단계: ${spec.effect} +${Math.round(spec.step * 100)}%`;
+          btn.title =
+            cost === null ? '' : `다음 단계: ${spec.effect} ${sign(Math.round(spec.step * 100))}`;
         });
       }
       box.appendChild(card);
