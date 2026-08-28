@@ -248,14 +248,7 @@ function renderGame() {
     income.textContent = '';
   }
 
-  const inv = $('#hud-inv');
-  inv.innerHTML = '';
-  if (my) {
-    const names = { iron: '⛏️철', oil: '🛢️유', grain: '🌾곡', machine: '⚙️기계', food: '🍞식품' };
-    for (const [k, label] of Object.entries(names)) {
-      inv.appendChild(el('span', 'inv-item', `${label} ${fmt1(my.inv[k] || 0)}`));
-    }
-  }
+  renderInventory(my);
 
   renderClock();
   renderEvent();
@@ -277,6 +270,55 @@ function renderEvent() {
   const left = Math.max(0, Math.round(e.until - S.game.elapsed));
   banner.textContent = `${e.icon} ${e.text} (${left}초 남음)`;
   banner.classList.toggle('bad', e.kind === 'mat-up' || e.kind === 'city-slump');
+}
+
+/**
+ * 상단 보유 자원.
+ *
+ * 0.5초마다 값이 바뀌는데 그때마다 다시 그리면 숫자 자릿수가 달라질 때
+ * 칸 너비가 변해 상단바가 밀리고, 휴대폰에서는 줄바꿈이 오가며 화면이 요동친다.
+ * 그래서 칸은 한 번만 만들고 숫자만 갈아끼우며, 숫자 칸 너비는 CSS 로 고정한다.
+ */
+// 좁은 화면에서는 이름을 감추고 아이콘만 남겨 한 줄에 들어가게 한다
+const INV_LABELS = {
+  iron: ['⛏️', '철'],
+  oil: ['🛢️', '유'],
+  grain: ['🌾', '곡'],
+  machine: ['⚙️', '기계'],
+  food: ['🍞', '식품'],
+};
+const invNums = {};
+
+/** 자릿수가 들쭉날쭉하지 않도록 100 이상은 정수로만 보여준다 */
+function fmtInv(n) {
+  if (n >= 100) return Math.round(n).toLocaleString('ko-KR');
+  return (Math.round(n * 10) / 10).toFixed(1);
+}
+
+function renderInventory(my) {
+  const inv = $('#hud-inv');
+  if (!inv.dataset.built) {
+    inv.innerHTML = '';
+    for (const [k, [icon, name]] of Object.entries(INV_LABELS)) {
+      const item = el('span', 'inv-item');
+      item.title = name;
+      const label = el('span', 'inv-label');
+      label.appendChild(el('span', 'inv-ico', icon));
+      label.appendChild(el('span', 'inv-name', name));
+      item.appendChild(label);
+      const num = el('span', 'inv-num', '0.0');
+      item.appendChild(num);
+      inv.appendChild(item);
+      invNums[k] = num;
+    }
+    inv.dataset.built = '1';
+  }
+  inv.classList.toggle('hidden', !my);
+  if (!my) return;
+  for (const k of Object.keys(INV_LABELS)) {
+    const text = fmtInv(my.inv[k] || 0);
+    if (invNums[k].textContent !== text) invNums[k].textContent = text;
+  }
 }
 
 function renderClock() {
@@ -313,7 +355,9 @@ const BUILDING_ICONS = { mine: '⚒️', rig: '🏗️', farm: '🚜', factory: 
  * 맵이 화면을 다 먹지 않도록 남는 공간의 80% 만 쓴다 (나머지는 메뉴 몫).
  * 다만 가로로 돌린 휴대폰처럼 세로가 짧을 때는 줄일 여유가 없으므로 거의 다 쓴다.
  */
-const COMPACT = '(orientation: landscape) and (max-height: 560px)';
+// 휴대폰(세로·가로 모두)에서는 CSS 가 맵 자리를 이미 좁게 잡아 주므로
+// 여기서 또 줄이면 공백만 늘어난다. 넓은 화면에서만 80% 로 줄인다.
+const COMPACT = '(max-width: 820px), (orientation: landscape) and (max-height: 560px)';
 function mapScale() {
   return window.matchMedia && window.matchMedia(COMPACT).matches ? 0.98 : 0.8;
 }
