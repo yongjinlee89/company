@@ -176,22 +176,23 @@ function goHitech(game, me) {
 }
 
 /**
- * 공장 증설. 땅+공장을 새로 짓는 것보다 싸고, 물동량이 커져 운송 단가도 내려간다.
- * 운송비가 싼(도시에 가까운) 공장부터 키운다.
+ * 건물 증설. 땅을 새로 사는 것보다 싸고, 공장은 물동량이 커져 운송 단가도 내려간다.
+ * @param {string} [only] 이 종류만 증설한다 (없으면 아무거나)
  */
-function tryUpgrade(game, me) {
-  const spec = BUILDINGS.factory;
+function tryUpgrade(game, me, only) {
   let best = null;
   for (const { idx, tile } of myTiles(game, me.id)) {
-    if (tile.b !== 'factory') continue;
+    if (!tile.b) continue;
+    if (only && tile.b !== only) continue;
+    const cost = game.upgradeCost(tile);
+    if (cost === null || me.cash < cost) continue;
     const level = tile.level || 1;
-    if (level >= spec.maxLevel) continue;
-    if (me.cash < spec.upgradeCost * level) continue;
     const d = nearestCityDist(game, idx);
+    // 낮은 단계부터, 같은 단계면 도시에 가까운(운송비 싼) 쪽부터
     if (!best || level < best.level || (level === best.level && d < best.d)) best = { idx, level, d };
   }
   if (!best) return false;
-  return game.upgradeFactory(me.id, best.idx).ok;
+  return game.upgradeBuilding(me.id, best.idx).ok;
 }
 
 /** 새로 지은 공장을 주력 제품으로 맞추고 노선을 다시 잡는다 */
@@ -220,10 +221,12 @@ function buildUp(game, me) {
   // 3) 확장 — 자원별로 따져서 가장 모자란 쪽을 먼저 채운다.
   //    (기계는 철2 : 유1 로 쓰므로 뭉뚱그려 보면 한쪽만 잔뜩 짓게 된다)
   const need = inputNeed(game, me);
+  // 증설한 건물은 그만큼 더 캐내므로 타일별 실제 생산량을 더한다
   const supply = {};
-  for (const kind of sources) {
-    for (const [k, r] of Object.entries(BUILDINGS[kind].out)) {
-      supply[k] = (supply[k] || 0) + r * (counts[kind] || 0);
+  for (const { tile } of mine) {
+    if (!tile.b) continue;
+    for (const [k, r] of Object.entries(game.buildingOutput(tile))) {
+      supply[k] = (supply[k] || 0) + r;
     }
   }
   let worst = null;
@@ -235,10 +238,12 @@ function buildUp(game, me) {
       if (!worst || ratio < worst.ratio) worst = { kind, ratio };
     }
   }
-  // 재료가 달리면 그 자원부터, 넉넉하면 생산 능력을 늘린다.
+  // 재료가 달리면 그 자원부터 채운다. 증설이 땅값이 안 들어 더 싸므로 먼저 시도한다.
   // 필요한 것을 살 돈이 없으면 아무것도 안 하고 모은다 — 여기서 더 싼 걸 대신 사면
   // 쓰지도 않을 생산기지만 잔뜩 늘어난다.
-  if (worst && worst.ratio < 1) return tryAcquire(game, me, worst.kind);
+  if (worst && worst.ratio < 1) {
+    return tryUpgrade(game, me, worst.kind) || tryAcquire(game, me, worst.kind);
+  }
   if (tryUpgrade(game, me)) return true;
   return tryAcquire(game, me, 'factory');
 }

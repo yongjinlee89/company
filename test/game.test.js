@@ -5,7 +5,7 @@
 const assert = require('assert');
 const {
   Game, MATERIALS, PRODUCTS, HITECH, TILE_TYPES, BUILDINGS,
-  TOTAL_SHARES, FOUNDER_SHARES, TAKEOVER_SHARES, DIVIDEND_YIELD,
+  TOTAL_SHARES, FOUNDER_SHARES, INITIAL_FLOAT, TAKEOVER_SHARES, DIVIDEND_YIELD,
   transportQuote, generateMap, resourceCounts, MAP_W, MAP_H,
 } = require('../src/game');
 
@@ -218,18 +218,18 @@ function run(game, seconds) {
   assert.ok(Math.abs(g.factoryRate(tile) - PRODUCTS.machine.rate) < 1e-9);
 
   const cash0 = a.cash;
-  assert.ok(g.upgradeFactory('a', idx).ok);
+  assert.ok(g.upgradeBuilding('a', idx).ok);
   assert.strictEqual(tile.level, 2);
   assert.strictEqual(a.cash, cash0 - BUILDINGS.factory.upgradeCost);
   assert.ok(Math.abs(g.factoryRate(tile) - PRODUCTS.machine.rate * 2) < 1e-9, '생산량이 레벨에 비례한다');
 
   // 남의 공장은 증설 불가
-  assert.ok(!g.upgradeFactory('b', idx).ok);
+  assert.ok(!g.upgradeBuilding('b', idx).ok);
 
   // 최대 단계까지만
-  assert.ok(g.upgradeFactory('a', idx).ok);
+  assert.ok(g.upgradeBuilding('a', idx).ok);
   assert.strictEqual(tile.level, BUILDINGS.factory.maxLevel);
-  assert.ok(!g.upgradeFactory('a', idx).ok, '최대 단계를 넘을 수 없다');
+  assert.ok(!g.upgradeBuilding('a', idx).ok, '최대 단계를 넘을 수 없다');
 
   // 실제 생산량도 3배
   a.inv.iron = 1000;
@@ -248,11 +248,58 @@ function run(game, seconds) {
     .map((_, ci) => ({ ci, d: g2.distToCity(i2, ci) }))
     .sort((x, y) => y.d - x.d)[0].ci;
   const q1 = g2.quoteRoute(i2, far, 'machine');
-  g2.upgradeFactory('a', i2);
-  g2.upgradeFactory('a', i2);
+  g2.upgradeBuilding('a', i2);
+  g2.upgradeBuilding('a', i2);
   const q3 = g2.quoteRoute(i2, far, 'machine');
   assert.ok(q3.net > q1.net * 3, `증설하면 순이익이 3배보다 더 는다 (${q1.net} → ${q3.net})`);
   console.log(`✓ 공장 증설 (${far}번 도시 ${q1.transport.name} ${q1.net}/초 → ${q3.transport.name} ${q3.net}/초)`);
+}
+
+/* ---------------- 자원 건물 증설 ---------------- */
+{
+  const g = newGame(5000);
+  const a = g.player('a');
+
+  for (const [kind, terrain] of [['mine', 'iron'], ['rig', 'oil'], ['farm', 'farm']]) {
+    const spec = BUILDINGS[kind];
+    assert.ok(spec.maxLevel >= 2 && spec.upgradeCost > 0, `${spec.name}도 증설할 수 있어야 한다`);
+
+    const idx = g.map.tiles.findIndex((t) => t.t === terrain && !t.owner);
+    g.buyTile('a', idx);
+    g.build('a', idx, kind);
+    const tile = g.map.tiles[idx];
+    assert.strictEqual(tile.level, 1, '지으면 1단계');
+
+    const mat = Object.keys(spec.out)[0];
+    const base = spec.out[mat];
+    assert.ok(Math.abs(g.buildingOutput(tile)[mat] - base) < 1e-9);
+
+    // 증설하면 생산량이 배로 는다
+    const cash0 = a.cash;
+    assert.strictEqual(g.upgradeCost(tile), spec.upgradeCost);
+    assert.ok(g.upgradeBuilding('a', idx).ok);
+    assert.strictEqual(tile.level, 2);
+    assert.strictEqual(a.cash, cash0 - spec.upgradeCost);
+    assert.ok(Math.abs(g.buildingOutput(tile)[mat] - base * 2) < 1e-9, `${spec.name} 생산량이 2배`);
+
+    // 남의 건물은 증설 불가
+    assert.ok(!g.upgradeBuilding('b', idx).ok);
+
+    // 최대 단계까지만
+    while (g.upgradeCost(tile) !== null) g.upgradeBuilding('a', idx);
+    assert.strictEqual(tile.level, spec.maxLevel);
+    assert.ok(!g.upgradeBuilding('a', idx).ok, '최대 단계를 넘을 수 없다');
+
+    // 실제로 그만큼 더 캔다
+    const before = a.inv[mat];
+    run(g, 10);
+    const made = a.inv[mat] - before;
+    assert.ok(Math.abs(made - base * spec.maxLevel * 10) < 0.05, `${spec.name} ${spec.maxLevel}단계는 ${spec.maxLevel}배로 캔다`);
+
+    // 증설비도 매각가에 반영된다
+    assert.ok(g.tileValue(idx) > TILE_TYPES[terrain].price + spec.cost * 0.7, '증설한 만큼 값이 오른다');
+  }
+  console.log('✓ 자원 건물 증설 (광산·시추소·농장 모두 3단계)');
 }
 
 /* ---------------- 하이테크 제품 ---------------- */
@@ -279,7 +326,8 @@ function run(game, seconds) {
   const made = HITECH.semi.rate * 10;
   assert.ok(Math.abs(a.inv.semi - made) < 0.05, `10초에 ${made}개 (실제 ${a.inv.semi})`);
   assert.ok(Math.abs(a.inv.machine - (100 - made)) < 0.05, '기계를 개당 1개 소비');
-  assert.strictEqual(a.cash, cash0, '도시로 안 팔리므로 현금은 그대로');
+  // 도시로 안 팔리므로 매출이 없다 (유지비만 조금씩 빠져나간다)
+  assert.ok(a.cash <= cash0, '하이테크는 만들어도 도시 매출이 생기지 않는다');
 
   // 시장에서 팔아야 돈이 된다
   assert.ok(g.market.semi, '반도체는 시장에서 거래된다');
@@ -428,28 +476,34 @@ function run(game, seconds) {
   const a = g.player('a');
   const b = g.player('b');
 
+  // 창업자는 지분을 거의 안 들고 시작한다 (자기 주식이 승패를 좌우하지 않게)
   assert.strictEqual(a.shares.a, FOUNDER_SHARES);
-  assert.strictEqual(g.stocks.a.float, TOTAL_SHARES - FOUNDER_SHARES);
+  assert.ok(FOUNDER_SHARES <= TOTAL_SHARES * 0.2, '창업자 초기 지분은 소액');
+  assert.strictEqual(g.availableShares('a'), INITIAL_FLOAT, '개장 물량은 일부만 나와 있다');
+  assert.strictEqual(g.stocks.a.unissued, TOTAL_SHARES - FOUNDER_SHARES - INITIAL_FLOAT);
 
+  // 개장 직후에는 물량이 적어 회사를 통째로 살 수 없다
   const p0 = g.stocks.b.price;
-  const float = TOTAL_SHARES - FOUNDER_SHARES;
-  assert.ok(float < TAKEOVER_SHARES, '유통 물량만으로는 과반을 못 넘긴다 (창업자가 대주주)');
-
-  // 시장에 나온 물량을 전부 쓸어담아도 경영권은 못 가져간다
-  assert.ok(g.stockTrade('a', { company: 'b', qty: float, side: 'buy' }).ok);
-  assert.strictEqual(a.shares.b, float);
-  assert.strictEqual(g.availableShares('b'), 0);
+  assert.ok(
+    !g.stockTrade('a', { company: 'b', qty: TAKEOVER_SHARES, side: 'buy' }).ok,
+    '상장 물량이 적어 초반에 과반을 살 수 없다'
+  );
+  assert.ok(g.stockTrade('a', { company: 'b', qty: INITIAL_FLOAT, side: 'buy' }).ok);
+  assert.strictEqual(a.shares.b, INITIAL_FLOAT);
   assert.ok(g.stocks.b.price > p0, '매수하면 주가가 오른다');
-  assert.strictEqual(g.controllerOf('b'), null, '유통 물량을 다 사도 과반이 안 된다');
-  assert.ok(!g.stockTrade('a', { company: 'b', qty: 1, side: 'buy' }).ok, '더 살 물량이 없다');
+  assert.strictEqual(g.controllerOf('b'), null, '초반 물량으로는 경영권을 못 가져간다');
 
-  // 창업자가 확장 자금을 마련하려고 지분을 내놓으면 그때 인수가 가능해진다
-  const need = TAKEOVER_SHARES - float;
-  assert.ok(g.stockTrade('b', { company: 'b', qty: need, side: 'sell' }).ok, '창업자는 자기 주식을 팔 수 있다');
-  assert.strictEqual(g.availableShares('b'), need);
+  // 시간이 지나면 미발행 물량이 상장되어 인수 길이 열린다
+  const unissued0 = g.stocks.b.unissued;
+  run(g, 500);
+  assert.ok(g.stocks.b.unissued < unissued0, '시간이 지나면 조금씩 상장된다');
+  assert.ok(g.availableShares('b') > INITIAL_FLOAT, '살 수 있는 물량이 늘어난다');
+
+  const need = TAKEOVER_SHARES - (a.shares.b || 0);
+  assert.ok(g.availableShares('b') >= need, '후반에는 과반을 모을 물량이 나온다');
   assert.ok(g.stockTrade('a', { company: 'b', qty: need, side: 'buy' }).ok);
   assert.strictEqual(a.shares.b, TAKEOVER_SHARES);
-  assert.strictEqual(g.controllerOf('b').id, 'a', '창업자가 판 만큼 인수 길이 열린다');
+  assert.strictEqual(g.controllerOf('b').id, 'a', '과반을 모으면 경영권을 가져온다');
 
   assert.ok(g.stockTrade('a', { company: 'b', qty: 10, side: 'sell' }).ok);
   assert.strictEqual(g.controllerOf('b'), null, '매도하면 경영권이 풀린다');
@@ -535,10 +589,11 @@ function run(game, seconds) {
   run(g, 10);
   const noControl = a.cash - aCash0;
 
-  // 과반을 넘기려면 창업자가 지분을 내놔야 한다 (유통 물량만으로는 부족)
-  const short = TAKEOVER_SHARES - 20 - g.availableShares('b');
-  if (short > 0) g.stockTrade('b', { company: 'b', qty: short, side: 'sell' });
-  g.stockTrade('a', { company: 'b', qty: TAKEOVER_SHARES - 20, side: 'buy' });
+  // 과반을 넘기려면 물량이 상장될 때까지 기다려야 한다
+  const need = TAKEOVER_SHARES - (a.shares.b || 0);
+  let guard = 0;
+  while (g.availableShares('b') < need && guard++ < 4000) run(g, 1);
+  assert.ok(g.stockTrade('a', { company: 'b', qty: need, side: 'buy' }).ok);
   assert.strictEqual(g.controllerOf('b').id, 'a');
   const aCash1 = a.cash;
   run(g, 10);

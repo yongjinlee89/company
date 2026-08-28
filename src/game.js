@@ -15,18 +15,31 @@ const MAP_H = 12;
 // 주식 수를 넉넉히 두면 소량 거래로도 값이 튀지 않아 실제로 사고팔 만해진다.
 // (주가 = 순자산 / 총주식수 이므로, 주식을 늘리면 그만큼 주당 가격은 내려간다)
 const TOTAL_SHARES = 500; // 회사당 발행 주식 수
-// 창업자가 70% 를 쥔다. 시장에 나온 150주만으로는 남의 회사를 통째로 살 수 없어서,
-// 아무것도 안 하고 주식만 사 모으는 쪽이 남의 성장을 다 가져가지 못한다.
-// 경영권을 노리려면 창업자가 스스로 지분을 팔아야 하고(확장 자금 마련),
-// 그 순간부터 인수 위험을 지게 된다.
-const FOUNDER_SHARES = 350;
+/*
+ * 창업자는 지분을 거의 들고 시작하지 않는다. 자기 주식을 잔뜩 쥐고 있으면
+ * 나중에 주가가 오를 때 그것만으로 승패가 갈려서, 회사를 잘 굴린 것보다
+ * 주가 운이 더 중요해진다.
+ *
+ * 대신 나머지 주식은 처음부터 시장에 다 나와 있지 않고 시간이 지나며 조금씩
+ * 상장된다. 그렇지 않으면 아무것도 안 하는 사람이 개장 직후 헐값에 남의 회사를
+ * 통째로 사 두고 성장만 받아먹는다.
+ */
+const FOUNDER_SHARES = 50; // 창업자 초기 지분 (10%)
+const INITIAL_FLOAT = 50; // 개장 시 시장에 나와 있는 물량
+const LISTING_PORTION = 0.7; // 게임 시간의 이 비율에 걸쳐 나머지가 상장된다
+// 외인·기관이 초당 굴리는 물량. 사람이 적어도 호가가 계속 움직이게 한다.
+const NPC_ACTIVITY = 3;
 const TAKEOVER_SHARES = 251; // 과반 — 이만큼 모으면 경영권 인수
-const STOCK_IMPACT = 0.0025; // 1주 체결마다 움직이는 주가 비율 (100주면 약 28%)
+// 1주 체결마다 움직이는 주가 비율. 지분을 크게 모을수록 평단가가 확 올라가서,
+// 남의 회사를 싼값에 쓸어 담기 어렵게 만든다. (100주면 약 49%)
+const STOCK_IMPACT = 0.004;
 const STOCK_SPREAD = 0.005; // 매수는 비싸게, 매도는 싸게 체결되는 폭
 // 배당은 주가에 비례해 초당 지급된다. 0.002 = 주가의 0.2%/초.
 // 주가가 오를수록 배당도 커지고, 회사 현금에서 빠져나가므로 남에게 지분을
 // 많이 내준 회사는 그만큼 성장이 느려진다. (되사면 그만큼 부담이 사라진다)
-const DIVIDEND_YIELD = 0.002;
+// 0.04%/초 = 10분에 약 24%. 이보다 높이면 지분을 많이 쥔 쪽이 배당만으로
+// 본업 수익만큼 벌어들여서, 아무것도 안 하고 주식만 사 모으는 게 최선이 된다.
+const DIVIDEND_YIELD = 0.0004;
 const TAKEOVER_CUT = 0.25; // 경영권 보유자가 가져가는 매출 비율
 
 const LOAN_INTEREST = 0.0008; // 대출 이자 (초당 0.08% — 10분이면 약 48%)
@@ -35,6 +48,14 @@ const LOAN_RATIO = 0.5; // 총자산 대비 최대 대출 비율
 const MAX_SHORT = 200; // 회사당 공매도 가능 주식 수
 const SHORT_MARGIN = 0.5; // 공매도할 때 필요한 증거금 (거래대금 대비)
 const RESALE_RATE = 0.7; // 건물을 은행에 되팔 때 돌려받는 비율
+// 건물 유지비 — 초당 건축비의 0.25%. 지어만 두고 안 돌리면 돈이 샌다.
+// 이게 있어야 무작정 확장하는 게 손해가 되고, 주가도 내려갈 이유가 생긴다.
+const UPKEEP_RATE = 0.0025;
+// 주가에 반영하는 수익력 — 초당 수익의 이 배수를 회사 가치로 쳐 준다.
+// 매출이 꺾이면 자산이 그대로여도 주가가 떨어진다.
+// 수익이 늘면 주가가 오르고 꺾이면 내려가야 하므로 넉넉히 잡는다.
+const INCOME_MULTIPLE = 100;
+
 const AUTO_BUY_RATE = 20; // 자동 매수로 1초에 채울 수 있는 최대 수량
 const AUTO_BUY_RESERVE = 150; // 자동 매수가 남겨 두는 최소 운영자금
 
@@ -79,12 +100,16 @@ const TILE_TYPES = {
   city: { name: '도시' },
 };
 
-// out = 초당 생산량. 공장은 PRODUCTS 의 rate × 레벨을 따른다.
+/**
+ * out = 초당 생산량. 공장은 PRODUCTS/HITECH 의 rate 를 따른다.
+ * 모든 건물은 3단계까지 증설할 수 있고, 생산량이 레벨에 비례한다.
+ * 증설비는 신축비의 1.2배 — 땅값이 안 드는 대신 조금 비싸다.
+ */
 const BUILDINGS = {
-  mine: { name: '광산', cost: 100, on: 'iron', out: { iron: 0.4 } },
-  rig: { name: '시추소', cost: 120, on: 'oil', out: { oil: 0.3 } },
-  farm: { name: '농장', cost: 80, on: 'farm', out: { grain: 0.5 } },
-  // 증설하면 물동량이 늘어 기차·항공 같은 대량 운송이 유리해진다
+  mine: { name: '광산', cost: 100, on: 'iron', out: { iron: 0.4 }, maxLevel: 3, upgradeCost: 120 },
+  rig: { name: '시추소', cost: 120, on: 'oil', out: { oil: 0.3 }, maxLevel: 3, upgradeCost: 145 },
+  farm: { name: '농장', cost: 80, on: 'farm', out: { grain: 0.5 }, maxLevel: 3, upgradeCost: 95 },
+  // 공장은 증설하면 물동량이 늘어 기차·항공 같은 대량 운송도 유리해진다
   factory: { name: '공장', cost: 150, on: 'plain', maxLevel: 3, upgradeCost: 180 },
 };
 
@@ -271,9 +296,14 @@ class Game {
     for (const p of this.players) {
       this.stocks[p.id] = {
         price: Math.max(0.05, settings.startCash / TOTAL_SHARES),
-        float: TOTAL_SHARES - FOUNDER_SHARES, // 시장에 그냥 남아 있는 물량
+        float: INITIAL_FLOAT, // 지금 시장에 나와 있는 물량
+        unissued: TOTAL_SHARES - FOUNDER_SHARES - INITIAL_FLOAT, // 아직 상장 전
         npc: 0, // 외부 투자자가 들고 있는 물량 (사람도 이걸 사 올 수 있다)
         mood: 1, // 시장 심리
+        turnover: 0, // 누적 거래량
+        volume: 0, // 최근 1초 거래량 (화면 표시용)
+        _pending: 0, // 상장 대기 소수점 누적
+        _lots: 0, // 외인·기관 주문 소수점 누적
       };
     }
 
@@ -337,9 +367,9 @@ class Game {
     if (p.cash < spec.cost) return { ok: false, error: '현금이 부족합니다.' };
     p.cash -= spec.cost;
     tile.b = kind;
+    tile.level = 1;
     if (kind === 'factory') {
       tile.mode = 'machine';
-      tile.level = 1;
       // 가장 이득이 큰 도시로 배송 노선을 자동 지정해 준다 (바로 돌아가도록)
       const best = this.bestRoute(idx, tile.mode);
       tile.route = best ? best.city : null;
@@ -353,9 +383,13 @@ class Game {
     const tile = this.tile(idx);
     if (!tile) return 0;
     let v = TILE_TYPES[tile.t].price || 0;
-    if (tile.b) v += BUILDINGS[tile.b].cost * RESALE_RATE;
-    for (let lv = 1; lv < (tile.level || 1); lv++) {
-      v += BUILDINGS.factory.upgradeCost * lv * RESALE_RATE;
+    if (tile.b) {
+      const spec = BUILDINGS[tile.b];
+      v += spec.cost * RESALE_RATE;
+      // 증설에 들인 돈도 자산으로 쳐 준다
+      for (let lv = 1; lv < (tile.level || 1); lv++) {
+        v += spec.upgradeCost * lv * RESALE_RATE;
+      }
     }
     return Math.round(v);
   }
@@ -575,21 +609,29 @@ class Game {
     return { ok: true, cost, profit };
   }
 
-  /** 공장 증설 — 생산량이 레벨에 비례해 늘고, 물동량이 커져 운송 단가가 싸진다 */
-  upgradeFactory(pid, idx) {
+  /** 다음 단계 증설에 드는 돈. 더 못 올리면 null */
+  upgradeCost(tile) {
+    if (!tile || !tile.b) return null;
+    const spec = BUILDINGS[tile.b];
+    const level = tile.level || 1;
+    if (!spec.maxLevel || level >= spec.maxLevel) return null;
+    return spec.upgradeCost * level;
+  }
+
+  /** 건물 증설 — 생산량이 레벨에 비례해 늘어난다 (공장은 물동량도 커져 운송 단가가 싸진다) */
+  upgradeBuilding(pid, idx) {
     if (this.ended) return { ok: false, error: '게임이 끝났습니다.' };
     const p = this.player(pid);
     const tile = this.tile(idx);
     if (!p || !tile) return { ok: false, error: '잘못된 요청입니다.' };
-    if (tile.owner !== pid || tile.b !== 'factory') return { ok: false, error: '내 공장이 아닙니다.' };
-    const spec = BUILDINGS.factory;
-    const level = tile.level || 1;
-    if (level >= spec.maxLevel) return { ok: false, error: `최대 ${spec.maxLevel}단계까지 증설할 수 있습니다.` };
-    const cost = spec.upgradeCost * level;
+    if (tile.owner !== pid || !tile.b) return { ok: false, error: '내 건물이 아닙니다.' };
+    const spec = BUILDINGS[tile.b];
+    const cost = this.upgradeCost(tile);
+    if (cost === null) return { ok: false, error: `최대 ${spec.maxLevel}단계까지 증설할 수 있습니다.` };
     if (p.cash < cost) return { ok: false, error: `현금이 부족합니다. (필요 ${cost})` };
     p.cash -= cost;
-    tile.level = level + 1;
-    this.pushLog(`${p.name} 님이 공장을 ${tile.level}단계로 증설했습니다.`);
+    tile.level = (tile.level || 1) + 1;
+    this.pushLog(`${p.name} 님이 ${spec.name}을(를) ${tile.level}단계로 증설했습니다.`);
     return { ok: true };
   }
 
@@ -597,6 +639,16 @@ class Game {
   factoryRate(tile) {
     const spec = MAKEABLE[tile.mode || 'machine'];
     return spec.rate * (tile.level || 1);
+  }
+
+  /** 자원 건물의 초당 생산량 (레벨 반영) */
+  buildingOutput(tile) {
+    const spec = BUILDINGS[tile.b];
+    if (!spec || !spec.out) return {};
+    const level = tile.level || 1;
+    const out = {};
+    for (const [k, r] of Object.entries(spec.out)) out[k] = r * level;
+    return out;
   }
 
   setFactoryMode(pid, idx, mode) {
@@ -858,7 +910,7 @@ class Game {
       if (!tile.b || !tile.owner) continue;
       const spec = BUILDINGS[tile.b];
       if (spec.out) {
-        for (const [k, r] of Object.entries(spec.out)) supply[k] = (supply[k] || 0) + r;
+        for (const [k, r] of Object.entries(this.buildingOutput(tile))) supply[k] = (supply[k] || 0) + r;
       } else {
         const rate = this.factoryRate(tile);
         for (const [k, n] of Object.entries(MAKEABLE[tile.mode || 'machine'].recipe)) {
@@ -972,27 +1024,45 @@ class Game {
       s.mood += (1 - s.mood) * 0.08 * dt + (Math.random() - 0.5) * 0.28 * Math.sqrt(dt);
       s.mood = Math.min(1.7, Math.max(0.5, s.mood));
 
-      // 본업 가치 기준 — 주식을 사 모은다고 자기 주가가 오르지는 않는다
-      const fair = Math.max(0.05, this.operatingWorth(p) / TOTAL_SHARES);
+      // 본업 가치 + 수익력. 주식을 사 모은다고 자기 주가가 오르지는 않고,
+      // 반대로 매출이 꺾이면 자산이 그대로여도 주가가 내려간다.
+      const worth = this.operatingWorth(p) + p.incomePerSec * INCOME_MULTIPLE;
+      const fair = Math.max(0.05, worth / TOTAL_SHARES);
       const target = fair * s.mood;
       const gap = (target - s.price) / s.price;
 
-      // 괴리가 크면 외부 투자자가 실제로 물량을 사고판다.
-      // 총주식수가 많으므로 한 번에 여러 주씩 움직여야 티가 난다.
-      const block = Math.max(1, Math.round(TOTAL_SHARES / 100));
-      const intensity = Math.min(1.2, Math.abs(gap) * 3);
-      if (Math.random() < intensity * dt) {
-        if (gap > 0 && s.float > 0) {
-          const n = Math.min(block, s.float);
-          s.float -= n;
-          s.npc += n;
-        } else if (gap < 0 && s.npc > 0) {
-          const n = Math.min(block, s.npc);
-          s.npc -= n;
-          s.float += n;
+      /*
+       * 외인·기관 매매. 사람이 몇 명 없어도 호가가 계속 움직이도록
+       * 매 초 꾸준히 사고판다. 사람 거래와 똑같이 체결마다 주가를 밀기 때문에
+       * 거래가 곧 시세 변동이 된다.
+       * 저평가면 매수 쪽으로, 고평가면 매도 쪽으로 기울되 한쪽으로만 쏠리지는 않는다.
+       */
+      s._lots += NPC_ACTIVITY * dt * (0.4 + Math.random() * 1.2);
+      const lots = Math.floor(s._lots);
+      if (lots > 0) {
+        s._lots -= lots;
+        const buyBias = 0.5 + Math.max(-0.4, Math.min(0.4, gap * 2));
+        if (Math.random() < buyBias) {
+          const n = Math.min(lots, s.float);
+          if (n > 0) {
+            s.float -= n;
+            s.npc += n;
+            s.price *= Math.pow(1 + STOCK_IMPACT, n);
+            s.turnover += n;
+          }
+        } else {
+          const n = Math.min(lots, s.npc);
+          if (n > 0) {
+            s.npc -= n;
+            s.float += n;
+            s.price *= Math.pow(1 - STOCK_IMPACT, n);
+            s.turnover += n;
+          }
         }
       }
-      s.price = Math.round(Math.max(0.05, s.price + (target - s.price) * 0.25 * dt) * 100) / 100;
+
+      // 거래가 없어도 적정가를 향해 완만히 돌아간다
+      s.price = Math.round(Math.max(0.05, s.price + (target - s.price) * 0.08 * dt) * 100) / 100;
     }
   }
 
@@ -1000,6 +1070,25 @@ class Game {
   availableShares(companyId) {
     const s = this.stocks[companyId];
     return s ? s.float + s.npc : 0;
+  }
+
+  /**
+   * 미발행 주식을 시간에 걸쳐 시장에 푼다.
+   * 개장 직후에 물량이 적으므로, 회사가 크기 전에 헐값으로 지분을 쓸어 담을 수 없다.
+   */
+  releaseShares(dt) {
+    const span = Math.max(1, this.settings.duration * LISTING_PORTION);
+    const rate = (TOTAL_SHARES - FOUNDER_SHARES - INITIAL_FLOAT) / span;
+    for (const s of Object.values(this.stocks)) {
+      if (s.unissued <= 0) continue;
+      s._pending += rate * dt;
+      const n = Math.min(Math.floor(s._pending), s.unissued);
+      if (n > 0) {
+        s.unissued -= n;
+        s.float += n;
+        s._pending -= n;
+      }
+    }
   }
 
   /** 어떤 회사가 지금 초당 물고 있는 배당 총액 (UI 표시용) */
@@ -1028,7 +1117,7 @@ class Game {
       if (!owner) continue;
       const spec = BUILDINGS[tile.b];
       if (spec.out) {
-        for (const [k, r] of Object.entries(spec.out)) owner.inv[k] += r * dt;
+        for (const [k, r] of Object.entries(this.buildingOutput(tile))) owner.inv[k] += r * dt;
         continue;
       }
       const mode = tile.mode || 'machine';
@@ -1090,6 +1179,18 @@ class Game {
       }
     }
 
+    // 4-b) 건물 유지비 — 돌아가든 놀든 매 초 나간다.
+    //      놀리는 공장이 손해가 되고, 과잉 확장은 회사를 갉아먹는다.
+    for (const tile of this.map.tiles) {
+      if (!tile.b || !tile.owner) continue;
+      const owner = this.player(tile.owner);
+      if (!owner) continue;
+      const spec = BUILDINGS[tile.b];
+      const fee = spec.cost * (tile.level || 1) * UPKEEP_RATE * dt;
+      owner.cash -= fee;
+      owner._incomeAccum -= fee;
+    }
+
     // 5) 대출 이자 — 현금이 모자라면 원금에 붙는다 (복리로 불어난다)
     for (const p of this.players) {
       if (p.debt <= 0) continue;
@@ -1100,7 +1201,8 @@ class Game {
       p._incomeAccum -= interest;
     }
 
-    // 6) 주식 — 외부 투자자가 거래하며 주가가 오르내린다
+    // 6) 주식 — 미발행 물량이 조금씩 상장되고, 외부 투자자가 거래하며 주가가 오르내린다
+    this.releaseShares(dt);
     this.tradeNpc(dt);
 
     // 7) 사건 — 원자재 시세와 도시 수요를 흔든다
@@ -1114,6 +1216,11 @@ class Game {
     this._incomeTimer += dt;
     if (this._incomeTimer >= 1) {
       this.runAutoBuy();
+      // 최근 1초 거래량을 갈무리해 화면에 보여준다
+      for (const s of Object.values(this.stocks)) {
+        s.volume = Math.round(s.turnover / this._incomeTimer);
+        s.turnover = 0;
+      }
       for (const p of this.players) {
         const measured = p._incomeAccum / this._incomeTimer;
         p.incomePerSec = Math.round((p.incomePerSec * 0.4 + measured * 0.6) * 100) / 100;
@@ -1166,11 +1273,21 @@ class Game {
     return v;
   }
 
-  /** 최종 순위용 자산 — 여기에는 보유 주식도 포함한다 */
+  /**
+   * 최종 순위용 자산 = 내 회사 가치 − 남이 가진 내 지분 + 내가 가진 남의 지분.
+   *
+   * 자기 주식을 그냥 더하면 회사 자산을 두 번 세는 셈이라 점수가 부풀어 오른다.
+   * 이렇게 두면 남이 내 회사를 사들일수록 내 몫이 줄고 그만큼 상대 몫이 늘어난다.
+   * (외부 투자자 보유분은 사람 사이의 계산이 아니므로 건드리지 않는다)
+   */
   netWorth(p) {
     let v = this.operatingWorth(p);
-    for (const [cid, n] of Object.entries(p.shares)) {
-      if (this.stocks[cid]) v += this.stocks[cid].price * n;
+    for (const other of this.players) {
+      if (other.id === p.id) continue;
+      const mine = other.shares[p.id] || 0;
+      if (mine) v -= this.stocks[p.id].price * mine;
+      const theirs = p.shares[other.id] || 0;
+      if (theirs) v += this.stocks[other.id].price * theirs;
     }
     return Math.round(v);
   }
@@ -1252,6 +1369,7 @@ module.exports = {
   TRANSPORT,
   TOTAL_SHARES,
   FOUNDER_SHARES,
+  INITIAL_FLOAT,
   TAKEOVER_SHARES,
   STOCK_IMPACT,
   STOCK_SPREAD,
@@ -1259,6 +1377,8 @@ module.exports = {
   TAKEOVER_CUT,
   LOAN_INTEREST,
   LOAN_MIN_LIMIT,
+  UPKEEP_RATE,
+  INCOME_MULTIPLE,
   MAX_SHORT,
   RESALE_RATE,
   AUTO_BUY_RATE,

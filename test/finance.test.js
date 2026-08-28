@@ -6,6 +6,7 @@ const assert = require('assert');
 const {
   Game, TILE_TYPES, BUILDINGS, MAX_SHORT, LOAN_INTEREST, LOAN_MIN_LIMIT, RESALE_RATE,
   TAKEOVER_SHARES, AUTO_BUY_RATE, AUTO_BUY_RESERVE,
+  TOTAL_SHARES, FOUNDER_SHARES, INITIAL_FLOAT,
 } = require('../src/game');
 
 function newGame(startCash = 5000, duration = 600) {
@@ -48,7 +49,7 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   g2.buyTile('a', f);
   g2.build('a', f, 'factory');
   const v1 = g2.tileValue(f);
-  g2.upgradeFactory('a', f);
+  g2.upgradeBuilding('a', f);
   assert.ok(g2.tileValue(f) > v1, '증설하면 매각가도 오른다');
   console.log(`✓ 자산 매각 (광산 ${spent} 투자 → ${value} 회수)`);
 }
@@ -195,10 +196,11 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
 /* ---------------- 주식 물량 (외부 투자자가 있어도 인수 가능) ---------------- */
 {
   const g = newGame(1000000);
-  // 창업자가 인수선을 넘길 만큼 지분을 내놓은 상황을 만든다
-  g.stockTrade('b', { company: 'b', qty: TAKEOVER_SHARES, side: 'sell' });
+  // 미발행 물량이 상장되어 인수선을 넘길 만큼 나온 상황을 만든다
+  g.stocks.b.float += g.stocks.b.unissued;
+  g.stocks.b.unissued = 0;
   const total = g.availableShares('b');
-  assert.ok(total >= TAKEOVER_SHARES);
+  assert.ok(total >= TAKEOVER_SHARES, '상장이 끝나면 과반을 모을 물량이 나온다');
 
   // 외부 투자자가 물량을 대부분 사가도, 사람은 그들에게서 되사 올 수 있어야 한다
   g.stocks.b.npc = total - 5;
@@ -266,6 +268,33 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   assert.ok(b2.cash >= AUTO_BUY_RESERVE - 40, `운영자금을 남긴다 (남은 현금 ${Math.round(b2.cash)})`);
   assert.ok(b2.inv.grain > 50, '그래도 살 수 있는 만큼은 사 온다');
   console.log(`✓ 자재 수량 유지 (초당 ${AUTO_BUY_RATE}개까지 자동 매수)`);
+}
+
+/* ---------------- 점진 상장 + 외인·기관 거래 ---------------- */
+{
+  const g = newGame(1000, 600);
+  const s = g.stocks.a;
+
+  // 개장 직후에는 물량이 적다
+  assert.strictEqual(s.float, INITIAL_FLOAT);
+  assert.ok(s.unissued > 0, '나머지는 아직 미발행');
+  const total0 = s.float + s.npc + s.unissued + FOUNDER_SHARES;
+  assert.strictEqual(total0, TOTAL_SHARES, '주식 총수가 맞는다');
+
+  // 시간이 지나며 상장되고, 외인·기관이 계속 사고판다
+  run(g, 60);
+  assert.ok(s.unissued < total0 - FOUNDER_SHARES - INITIAL_FLOAT, '시간이 지나면 상장된다');
+  assert.ok(s.volume > 0, '외인·기관이 거래한다');
+  assert.ok(s.npc > 0 || s.float > INITIAL_FLOAT, '물량이 시장에서 오간다');
+
+  // 총수는 언제나 보존된다
+  const total1 = s.float + s.npc + s.unissued + (g.player('a').shares.a || 0);
+  assert.strictEqual(total1, TOTAL_SHARES, '거래가 오가도 주식 총수는 그대로');
+
+  // 상장이 끝나면 미발행이 0 이 된다
+  run(g, 500);
+  assert.strictEqual(g.stocks.a.unissued, 0, '게임 후반이면 전량 상장된다');
+  console.log(`✓ 점진 상장 + 외인·기관 거래 (초당 ${g.stocks.a.volume}주)`);
 }
 
 /* ---------------- 주가가 오르내린다 ---------------- */

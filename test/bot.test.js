@@ -105,10 +105,11 @@ function countBuildings(game, id) {
   const g = newGame(200000);
   const attacker = g.player('p1');
   // 인수까지 얼마 안 남은 수준까지 사들여 위협한다.
-  // 유통 물량이 적으므로 창업자가 지분을 내놓은 상황을 가정한다.
+  // 후반이라 미발행 물량이 다 상장된 상황을 가정한다.
+  g.stocks.p0.float += g.stocks.p0.unissued;
+  g.stocks.p0.unissued = 0;
   const threat = Math.round(TAKEOVER_SHARES * 0.85);
-  const short = threat - g.availableShares('p0') + 20; // 되살 물량도 조금 남겨 둔다
-  if (short > 0) g.stockTrade('p0', { company: 'p0', qty: short, side: 'sell' });
+  assert.ok(g.availableShares('p0') > threat, '되살 물량도 남아 있어야 방어가 가능하다');
   assert.ok(g.stockTrade('p1', { company: 'p0', qty: threat, side: 'buy' }).ok);
   assert.ok(g.availableShares('p0') > 0, '되살 물량이 남아 있어야 방어가 가능하다');
   assert.ok((attacker.shares.p0 || 0) >= TAKEOVER_SHARES * 0.8);
@@ -150,7 +151,7 @@ function countBuildings(game, id) {
   assert.ok(Math.abs(need.iron - 2 * PRODUCTS.machine.rate) < 1e-9, '기계는 철을 개당 2개 쓴다');
   assert.ok(Math.abs(need.oil - 1 * PRODUCTS.machine.rate) < 1e-9);
 
-  g.upgradeFactory('p0', idx);
+  g.upgradeBuilding('p0', idx);
   need = inputNeed(g, me);
   assert.ok(Math.abs(need.iron - 2 * PRODUCTS.machine.rate * 2) < 1e-9, '증설하면 소비도 늘어난다');
   console.log('✓ 재료 소비량 계산');

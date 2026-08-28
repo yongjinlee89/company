@@ -710,11 +710,32 @@ function buildTilePanel(panel, tile, live) {
     }
   }
 
-  // 공장: 생산 품목 + 증설 + 배송 노선
+  /** 증설 버튼 — 광산·시추소·농장·공장 모두 3단계까지 키울 수 있다 */
+  const upgradeButton = () => {
+    const spec = C.buildings[tile.b];
+    const level = tile.level || 1;
+    if (!spec.maxLevel || level >= spec.maxLevel) return;
+    const cost = spec.upgradeCost * level;
+    costButton(`⬆️ ${level + 1}단계 증설 (${cost}) · 생산 ${level + 1}배`, cost, () =>
+      emit('upgrade', { idx: selectedTile })
+    );
+  };
+
+  // 자원 건물 — 생산량을 보여주고 증설할 수 있다
+  if (tile.owner === ME && tile.b && C.buildings[tile.b].out) {
+    const spec = C.buildings[tile.b];
+    const level = tile.level || 1;
+    const out = Object.entries(spec.out)
+      .map(([k, r]) => `${nameOf(k)} +${Math.round(r * level * 100) / 100}/초`)
+      .join(', ');
+    panel.appendChild(el('div', 'tp-row', `⛏️ ${spec.name} ${level}단계 · ${out}`));
+    upgradeButton();
+  }
+
+  // 공장: 생산 품목 + 배송 노선
   if (tile.owner === ME && tile.b === 'factory') {
     const mode = tile.mode || 'machine';
     const level = tile.level || 1;
-    const fSpec = C.buildings.factory;
 
     panel.appendChild(el('div', 'tp-row', `🏭 공장 ${level}단계`));
 
@@ -742,13 +763,7 @@ function buildTilePanel(panel, tile, live) {
     };
     modeGroup('🚚 배송', '도시로 자동 배송해 판매합니다', C.products);
     modeGroup('🔬 하이테크', '재고로 쌓아 두었다가 시장 탭에서 팝니다', C.hitech);
-
-    if (level < fSpec.maxLevel) {
-      const cost = fSpec.upgradeCost * level;
-      costButton(`⬆️ ${level + 1}단계 증설 (${cost}) · 생산 ${level + 1}배`, cost, () =>
-        emit('upgradeFactory', { idx: selectedTile })
-      );
-    }
+    upgradeButton();
 
     const idleRow = el('div', 'tp-row warn', '⚠️ 재료가 없어 멈춰 있습니다');
     panel.appendChild(idleRow);
@@ -1076,7 +1091,7 @@ function renderStocks() {
     const box = $('#tab-stocks');
     const my = me();
     box.innerHTML = '';
-    const yieldPct = Math.round(g.constants.dividendYield * 1000) / 10;
+    const yieldPct = Math.round(g.constants.dividendYield * 100000) / 1000;
     box.appendChild(
       el(
         'p',
@@ -1124,7 +1139,9 @@ function renderStocks() {
         const y = gg.constants.dividendYield;
         const mine = me();
         price.textContent = `${fmt2(s.price)}/주`;
-        float.textContent = `물량 ${fmt(s.float + s.npc)}주`;
+        // 살 수 있는 물량 + 외인·기관 거래량 (미상장 물량이 남았으면 함께 알려준다)
+        const pending = s.unissued > 0 ? ` (미상장 ${fmt(s.unissued)})` : '';
+        float.textContent = `물량 ${fmt(s.float + s.npc)}${pending} · 거래 ${fmt(s.volume || 0)}/초`;
         drawSpark(spark, priceHistory['stock:' + p.id]);
 
         // 이 회사 주식에서 내가 받는 배당 / 내 회사가 물고 있는 배당
