@@ -4,7 +4,7 @@
 
 const assert = require('assert');
 const {
-  Game, MATERIALS, PRODUCTS, TILE_TYPES, BUILDINGS,
+  Game, MATERIALS, PRODUCTS, HITECH, TILE_TYPES, BUILDINGS,
   TOTAL_SHARES, FOUNDER_SHARES, TAKEOVER_SHARES, DIVIDEND_YIELD,
   transportQuote, generateMap, resourceCounts, MAP_W, MAP_H,
 } = require('../src/game');
@@ -255,6 +255,92 @@ function run(game, seconds) {
   console.log(`✓ 공장 증설 (${far}번 도시 ${q1.transport.name} ${q1.net}/초 → ${q3.transport.name} ${q3.net}/초)`);
 }
 
+/* ---------------- 하이테크 제품 ---------------- */
+{
+  const g = newGame(20000);
+  const a = g.player('a');
+  const idx = g.map.tiles.findIndex((t) => t.t === 'plain');
+  g.buyTile('a', idx);
+  g.build('a', idx, 'factory');
+  const tile = g.map.tiles[idx];
+
+  // 하이테크로 돌리면 배송 노선이 꺼진다 (도시로 안 간다)
+  assert.ok(tile.route !== null, '기계 공장은 노선이 잡혀 있다');
+  assert.ok(g.setFactoryMode('a', idx, 'semi').ok);
+  assert.strictEqual(tile.route, null, '하이테크는 도시로 배송하지 않는다');
+  assert.ok(!g.setRoute('a', idx, 0).ok, '하이테크 공장에는 노선을 걸 수 없다');
+  assert.strictEqual(g.quoteRoute(idx, 0, 'semi'), null, '도시 견적도 없다');
+
+  // 재료(기계 + 원유)를 넣으면 반도체가 재고로 쌓인다
+  a.inv.machine = 100;
+  a.inv.oil = 200;
+  const cash0 = a.cash;
+  run(g, 10);
+  const made = HITECH.semi.rate * 10;
+  assert.ok(Math.abs(a.inv.semi - made) < 0.05, `10초에 ${made}개 (실제 ${a.inv.semi})`);
+  assert.ok(Math.abs(a.inv.machine - (100 - made)) < 0.05, '기계를 개당 1개 소비');
+  assert.strictEqual(a.cash, cash0, '도시로 안 팔리므로 현금은 그대로');
+
+  // 시장에서 팔아야 돈이 된다
+  assert.ok(g.market.semi, '반도체는 시장에서 거래된다');
+  run(g, 60); // 팔 만큼 쌓일 때까지
+  const stock = Math.floor(a.inv.semi);
+  assert.ok(stock >= 2, `재고가 쌓인다 (${a.inv.semi.toFixed(1)}개)`);
+  const sell = g.trade('a', { mat: 'semi', qty: stock, side: 'sell' });
+  assert.ok(sell.ok && sell.total > 0, '시장에 팔면 현금이 들어온다');
+  assert.ok(a.cash > cash0);
+  assert.ok(sell.total / stock > PRODUCTS.machine.base, '반도체는 기계보다 개당 비싸다');
+
+  // 자동차는 반도체를 재료로 쓴다 (사슬이 이어진다)
+  assert.ok(HITECH.car.recipe.semi > 0, '자동차는 반도체가 필요하다');
+  assert.ok(HITECH.car.base > HITECH.semi.base, '뒷단계일수록 값이 비싸다');
+  assert.ok(HITECH.semi.base > PRODUCTS.machine.base, '하이테크가 도시 제품보다 비싸다');
+
+  // 기계 공장 노선을 끄면 기계가 재고로 쌓여 하이테크 재료가 된다
+  const g2 = newGame(20000);
+  const i2 = g2.map.tiles.findIndex((t) => t.t === 'plain');
+  g2.buyTile('a', i2);
+  g2.build('a', i2, 'factory');
+  const p2 = g2.player('a');
+  p2.inv.iron = 500;
+  p2.inv.oil = 500;
+  g2.setRoute('a', i2, null);
+  run(g2, 10);
+  assert.ok(p2.inv.machine > 1, '노선을 끄면 기계가 재고로 쌓인다');
+  console.log(`✓ 하이테크 (반도체 ${HITECH.semi.base} / 자동차 ${HITECH.car.base}, 시장 판매)`);
+}
+
+/* ---------------- 주가는 본업 가치만 따라간다 ---------------- */
+{
+  const g = newGame(10000);
+  const a = g.player('a');
+  const b = g.player('b');
+
+  const priceA0 = g.stocks.a.price;
+  const worthA0 = g.operatingWorth(a);
+
+  // a 가 b 주식을 사도 a 의 본업 가치는 늘지 않아야 한다
+  // (늘면 서로 사 주기만 해도 모두의 주가가 부풀어 오른다)
+  g.stockTrade('a', { company: 'b', qty: 50, side: 'buy' });
+  assert.ok(g.operatingWorth(a) < worthA0, '주식을 사면 현금이 나가 본업 가치는 오히려 준다');
+  assert.ok(g.netWorth(a) > 0, '순위용 순자산에는 보유 주식이 포함된다');
+
+  run(g, 20);
+  assert.ok(g.stocks.a.price <= priceA0 * 1.3, '남의 주식을 샀다고 내 주가가 뛰지 않는다');
+
+  // 반대로 실제로 회사를 키우면 주가가 오른다
+  const g2 = newGame(10000);
+  const builder = g2.player('a');
+  const idx = g2.map.tiles.findIndex((t) => t.t === 'iron');
+  g2.buyTile('a', idx);
+  g2.build('a', idx, 'mine');
+  builder.inv.iron = 300;
+  const before = g2.stocks.a.price;
+  run(g2, 30);
+  assert.ok(g2.stocks.a.price > before * 0.9, '본업을 키우면 주가가 따라온다');
+  console.log('✓ 주가 기준 = 본업 가치 (주식 상호매수로 부풀지 않음)');
+}
+
 /* ---------------- 수요는 시간이 지나면 회복된다 ---------------- */
 {
   const g = newGame();
@@ -346,20 +432,24 @@ function run(game, seconds) {
   assert.strictEqual(g.stocks.a.float, TOTAL_SHARES - FOUNDER_SHARES);
 
   const p0 = g.stocks.b.price;
-  const under = TAKEOVER_SHARES - 30; // 인수선 바로 아래
-  assert.ok(g.stockTrade('a', { company: 'b', qty: under, side: 'buy' }).ok);
-  assert.strictEqual(a.shares.b, under);
-  assert.strictEqual(g.stocks.b.float, TOTAL_SHARES - FOUNDER_SHARES - under);
-  assert.ok(g.stocks.b.price > p0, '매수하면 주가가 오른다');
-  assert.strictEqual(g.controllerOf('b'), null, '과반에 못 미치면 경영권 없음');
+  const float = TOTAL_SHARES - FOUNDER_SHARES;
+  assert.ok(float < TAKEOVER_SHARES, '유통 물량만으로는 과반을 못 넘긴다 (창업자가 대주주)');
 
-  assert.ok(g.stockTrade('a', { company: 'b', qty: 30, side: 'buy' }).ok);
+  // 시장에 나온 물량을 전부 쓸어담아도 경영권은 못 가져간다
+  assert.ok(g.stockTrade('a', { company: 'b', qty: float, side: 'buy' }).ok);
+  assert.strictEqual(a.shares.b, float);
+  assert.strictEqual(g.availableShares('b'), 0);
+  assert.ok(g.stocks.b.price > p0, '매수하면 주가가 오른다');
+  assert.strictEqual(g.controllerOf('b'), null, '유통 물량을 다 사도 과반이 안 된다');
+  assert.ok(!g.stockTrade('a', { company: 'b', qty: 1, side: 'buy' }).ok, '더 살 물량이 없다');
+
+  // 창업자가 확장 자금을 마련하려고 지분을 내놓으면 그때 인수가 가능해진다
+  const need = TAKEOVER_SHARES - float;
+  assert.ok(g.stockTrade('b', { company: 'b', qty: need, side: 'sell' }).ok, '창업자는 자기 주식을 팔 수 있다');
+  assert.strictEqual(g.availableShares('b'), need);
+  assert.ok(g.stockTrade('a', { company: 'b', qty: need, side: 'buy' }).ok);
   assert.strictEqual(a.shares.b, TAKEOVER_SHARES);
-  assert.strictEqual(g.controllerOf('b').id, 'a');
-  assert.ok(
-    !g.stockTrade('b', { company: 'b', qty: g.availableShares('b') + 1, side: 'buy' }).ok,
-    '유통 물량 초과 매수 불가'
-  );
+  assert.strictEqual(g.controllerOf('b').id, 'a', '창업자가 판 만큼 인수 길이 열린다');
 
   assert.ok(g.stockTrade('a', { company: 'b', qty: 10, side: 'sell' }).ok);
   assert.strictEqual(g.controllerOf('b'), null, '매도하면 경영권이 풀린다');
@@ -445,7 +535,9 @@ function run(game, seconds) {
   run(g, 10);
   const noControl = a.cash - aCash0;
 
-  // 과반을 넘겨 경영권을 쥐면 매출의 25%가 추가로 들어온다
+  // 과반을 넘기려면 창업자가 지분을 내놔야 한다 (유통 물량만으로는 부족)
+  const short = TAKEOVER_SHARES - 20 - g.availableShares('b');
+  if (short > 0) g.stockTrade('b', { company: 'b', qty: short, side: 'sell' });
   g.stockTrade('a', { company: 'b', qty: TAKEOVER_SHARES - 20, side: 'buy' });
   assert.strictEqual(g.controllerOf('b').id, 'a');
   const aCash1 = a.cash;

@@ -13,6 +13,8 @@
 const {
   MATERIALS,
   PRODUCTS,
+  HITECH,
+  MAKEABLE,
   BUILDINGS,
   TILE_TYPES,
   TOTAL_SHARES,
@@ -47,13 +49,13 @@ function myTiles(game, id) {
   return out;
 }
 
-/** 내 공장들이 초당 소비하는 원자재 양 (증설 레벨 반영) */
+/** 내 공장들이 초당 소비하는 재료 양 (증설 레벨 반영) */
 function inputNeed(game, me) {
   const need = {};
   for (const { tile } of myTiles(game, me.id)) {
     if (tile.b !== 'factory') continue;
     const rate = game.factoryRate(tile);
-    for (const [k, n] of Object.entries(PRODUCTS[tile.mode || 'machine'].recipe)) {
+    for (const [k, n] of Object.entries(MAKEABLE[tile.mode || 'machine'].recipe)) {
       need[k] = (need[k] || 0) + n * rate;
     }
   }
@@ -76,6 +78,8 @@ function checkRoutes(game, me) {
   let changed = false;
   for (const { idx, tile } of myTiles(game, me.id)) {
     if (tile.b !== 'factory') continue;
+    // 하이테크 공장에 재료를 대 주려고 일부러 노선을 끈 공장은 건드리지 않는다
+    if (idx === me._feeder) continue;
     const mode = tile.mode || 'machine';
     const best = game.bestRoute(idx, mode);
     if (!best) continue;
@@ -89,15 +93,20 @@ function checkRoutes(game, me) {
   return changed;
 }
 
-/** 공장이 쓰고 남을 원자재는 시세가 괜찮을 때 팔아 현금화한다 */
+/**
+ * 공장이 쓰고 남을 자재는 시세가 괜찮을 때 팔아 현금화한다.
+ * 하이테크 제품은 도시로 안 가고 시장에서만 팔리므로 쌓이는 대로 내다 판다.
+ */
 function sellSurplus(game, me) {
   const need = inputNeed(game, me);
-  for (const mat of Object.keys(MATERIALS)) {
-    const keep = (need[mat] || 0) * SURPLUS_SEC;
-    const extra = Math.floor((me.inv[mat] || 0) - keep);
-    const m = game.market[mat];
-    if (extra >= 1 && m.price >= m.base * 0.95) {
-      game.trade(me.id, { mat, qty: Math.min(extra, 500), side: 'sell' });
+  for (const key of Object.keys(game.market)) {
+    const keep = (need[key] || 0) * SURPLUS_SEC;
+    const extra = Math.floor((me.inv[key] || 0) - keep);
+    if (extra < 1) continue;
+    const m = game.market[key];
+    // 원자재는 제값 받을 때만, 하이테크는 만든 게 곧 매출이니 바로 판다
+    if (HITECH[key] || m.price >= m.base * 0.95) {
+      game.trade(me.id, { mat: key, qty: Math.min(extra, 500), side: 'sell' });
     }
   }
 }
@@ -133,6 +142,37 @@ function tryAcquire(game, me, kind) {
   const built = game.build(me.id, best.idx, kind).ok;
   if (built && kind === 'factory') applyFocus(game, me, best.idx);
   return built;
+}
+
+/**
+ * 회사가 어느 정도 자리를 잡으면 하이테크(반도체)로 넘어간다.
+ * 기계 공장 하나의 노선을 꺼서 기계를 모으고, 그걸 반도체 공장에 먹인다.
+ * @returns {boolean} 맵이 바뀌었는지
+ */
+function goHitech(game, me) {
+  const factories = myTiles(game, me.id).filter((t) => t.tile.b === 'factory');
+  if (factories.length < 3 || me.cash < 2000) return false;
+
+  const machines = factories.filter((t) => (t.tile.mode || 'machine') === 'machine');
+  if (machines.length < 2) return false; // 기계를 대 줄 공장이 남아 있어야 한다
+
+  if (!factories.some((t) => HITECH[t.tile.mode])) {
+    // 도시에서 먼 공장을 하이테크로 돌린다 (가까운 쪽은 배송에 남겨 둔다)
+    const far = machines
+      .slice()
+      .sort((a, b) => nearestCityDist(game, b.idx) - nearestCityDist(game, a.idx))[0];
+    return game.setFactoryMode(me.id, far.idx, 'semi').ok;
+  }
+
+  // 반도체 공장이 생겼으면 기계 공장 하나는 노선을 꺼서 재료를 쌓는다
+  if (me._feeder === undefined) {
+    const feeder = machines.find((t) => t.tile.route !== null);
+    if (feeder && game.setRoute(me.id, feeder.idx, null).ok) {
+      me._feeder = feeder.idx;
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -212,6 +252,7 @@ function buyInputs(game, me) {
     const short = Math.floor(target - (me.inv[mat] || 0));
     if (short < 1) continue;
     const m = game.market[mat];
+    if (!m) continue; // 기계처럼 시장에 없는 재료는 직접 만들어야 한다
     if (m.price > m.base * 1.6) continue; // 너무 비싸면 이번엔 건너뛴다
     const afford = Math.floor((me.cash - RESERVE) / (m.price * 1.02));
     const qty = Math.min(short, afford, 500);
@@ -230,8 +271,9 @@ function playStocks(game, me) {
   const myStock = game.stocks[me.id];
 
   const threat = game.players.some((p) => p.id !== me.id && (p.shares[me.id] || 0) >= DEFEND_FROM);
-  if (threat && myStock.float > 0 && me.cash > 200) {
-    const qty = Math.min(myStock.float, Math.floor((me.cash - 150) / (myStock.price * 1.05)), LOT);
+  const avail = game.availableShares(me.id); // 외부 투자자 보유분도 되사 올 수 있다
+  if (threat && avail > 0 && me.cash > 200) {
+    const qty = Math.min(avail, Math.floor((me.cash - 150) / (myStock.price * 1.05)), LOT);
     if (qty > 0) {
       game.stockTrade(me.id, { company: me.id, qty, side: 'buy' });
       return;
@@ -307,6 +349,7 @@ function think(game, botId) {
   let mapChanged = checkRoutes(game, me);
   sellSurplus(game, me);
   manageLoan(game, me);
+  if (goHitech(game, me)) mapChanged = true;
   if (buildUp(game, me)) mapChanged = true;
   buyInputs(game, me);
   playStocks(game, me);

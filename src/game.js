@@ -15,7 +15,11 @@ const MAP_H = 12;
 // 주식 수를 넉넉히 두면 소량 거래로도 값이 튀지 않아 실제로 사고팔 만해진다.
 // (주가 = 순자산 / 총주식수 이므로, 주식을 늘리면 그만큼 주당 가격은 내려간다)
 const TOTAL_SHARES = 500; // 회사당 발행 주식 수
-const FOUNDER_SHARES = 175; // 창업자 보유분 (나머지 325주는 시장 유통)
+// 창업자가 70% 를 쥔다. 시장에 나온 150주만으로는 남의 회사를 통째로 살 수 없어서,
+// 아무것도 안 하고 주식만 사 모으는 쪽이 남의 성장을 다 가져가지 못한다.
+// 경영권을 노리려면 창업자가 스스로 지분을 팔아야 하고(확장 자금 마련),
+// 그 순간부터 인수 위험을 지게 된다.
+const FOUNDER_SHARES = 350;
 const TAKEOVER_SHARES = 251; // 과반 — 이만큼 모으면 경영권 인수
 const STOCK_IMPACT = 0.0025; // 1주 체결마다 움직이는 주가 비율 (100주면 약 28%)
 const STOCK_SPREAD = 0.005; // 매수는 비싸게, 매도는 싸게 체결되는 폭
@@ -40,15 +44,30 @@ const MATERIALS = {
   grain: { name: '곡물', base: 6 },
 };
 
-// rate = 공장 하나가 초당 만들어내는 개수
+// 도시로 배송해서 파는 제품. rate = 공장 하나가 초당 만들어내는 개수
 const PRODUCTS = {
   machine: { name: '기계', base: 60, recipe: { iron: 2, oil: 1 }, rate: 0.18 },
   food: { name: '식품', base: 30, recipe: { grain: 2 }, rate: 0.22 },
 };
 
+/**
+ * 하이테크 제품. 도시로 보내지 않고 원자재처럼 재고로 쌓아 두었다가 시장에 판다.
+ * 기계를 재료로 쓰므로, 기계 공장의 배송 노선을 꺼서 기계를 모아야 만들 수 있다.
+ * 손이 많이 가는 대신 개당 마진이 크다.
+ */
+const HITECH = {
+  semi: { name: '반도체', base: 200, recipe: { machine: 1, oil: 2 }, rate: 0.07 },
+  car: { name: '자동차', base: 520, recipe: { machine: 2, semi: 1 }, rate: 0.035 },
+};
+
+/** 공장이 만들 수 있는 모든 것 */
+const MAKEABLE = { ...PRODUCTS, ...HITECH };
+/** 시장에서 사고팔 수 있는 모든 것 (원자재 + 하이테크) */
+const TRADABLE = { ...MATERIALS, ...HITECH };
+
 const ITEM_NAMES = {};
 for (const [k, v] of Object.entries(MATERIALS)) ITEM_NAMES[k] = v.name;
-for (const [k, v] of Object.entries(PRODUCTS)) ITEM_NAMES[k] = v.name;
+for (const [k, v] of Object.entries(MAKEABLE)) ITEM_NAMES[k] = v.name;
 
 // 타일 종류. price 가 없으면 구매 불가.
 const TILE_TYPES = {
@@ -222,9 +241,12 @@ class Game {
 
     // 자재 시장: 사면 오르고 팔면 내리고, 시간이 지나면 기준가로 회귀.
     // base 는 사건에 따라 흔들리는 "현재 기준가", baseline 은 원래 값.
+    // 원자재와 하이테크 제품이 같은 시장에서 거래된다
     this.market = {};
-    for (const [key, m] of Object.entries(MATERIALS)) {
-      this.market[key] = { price: m.base, base: m.base, baseline: m.base };
+    for (const [key, m] of Object.entries(TRADABLE)) {
+      // baseline 은 수요·공급에 따라 흐르고, eventMult 는 사건이 곱하는 배수.
+      // base(회귀 목표) = baseline × eventMult
+      this.market[key] = { price: m.base, base: m.base, baseline: m.base, eventMult: 1 };
     }
 
     this.players = playerInfos.map((info, i) => ({
@@ -232,14 +254,14 @@ class Game {
       name: info.name,
       color: PLAYER_COLORS[i % PLAYER_COLORS.length],
       cash: settings.startCash,
-      inv: { iron: 0, oil: 0, grain: 0, machine: 0, food: 0 },
+      inv: { iron: 0, oil: 0, grain: 0, machine: 0, food: 0, semi: 0, car: 0 },
       // shares[대상 회사 id] = 보유 주식 수
       shares: { [info.id]: FOUNDER_SHARES },
       debt: 0,
       // shorts[대상 회사 id] = { shares, proceeds } — 공매도 미결제 잔고
       shorts: {},
       // autoBuy[자재] = 유지할 수량. 공장이 재료 없이 멈추지 않게 자동으로 사 온다.
-      autoBuy: { iron: 0, oil: 0, grain: 0 },
+      autoBuy: { iron: 0, oil: 0, grain: 0, semi: 0, car: 0 },
       incomePerSec: 0,
       _incomeAccum: 0, // 1초 단위로 집계해 incomePerSec 로 옮긴다
     }));
@@ -573,8 +595,8 @@ class Game {
 
   /** 공장의 초당 생산량 (레벨 반영) */
   factoryRate(tile) {
-    const mode = tile.mode || 'machine';
-    return PRODUCTS[mode].rate * (tile.level || 1);
+    const spec = MAKEABLE[tile.mode || 'machine'];
+    return spec.rate * (tile.level || 1);
   }
 
   setFactoryMode(pid, idx, mode) {
@@ -582,8 +604,14 @@ class Game {
     const tile = this.tile(idx);
     if (!p || !tile) return { ok: false, error: '잘못된 요청입니다.' };
     if (tile.owner !== pid || tile.b !== 'factory') return { ok: false, error: '내 공장이 아닙니다.' };
-    if (!PRODUCTS[mode]) return { ok: false, error: '알 수 없는 생산 품목입니다.' };
+    if (!MAKEABLE[mode]) return { ok: false, error: '알 수 없는 생산 품목입니다.' };
     tile.mode = mode;
+    // 하이테크로 바꾸면 배송 노선은 의미가 없다 (시장에서 판다)
+    if (HITECH[mode]) tile.route = null;
+    else if (tile.route === null) {
+      const best = this.bestRoute(idx, mode);
+      if (best) tile.route = best.city;
+    }
     return { ok: true };
   }
 
@@ -593,6 +621,7 @@ class Game {
     const tile = this.tile(idx);
     if (!p || !tile) return { ok: false, error: '잘못된 요청입니다.' };
     if (tile.owner !== pid || tile.b !== 'factory') return { ok: false, error: '내 공장이 아닙니다.' };
+    if (HITECH[tile.mode]) return { ok: false, error: '하이테크 제품은 시장에서 팝니다.' };
     if (city === null || city === undefined || city === '') {
       tile.route = null;
       return { ok: true };
@@ -609,7 +638,7 @@ class Game {
   quoteRoute(idx, cityIndex, mode) {
     const tile = this.tile(idx);
     const useMode = mode || (tile && tile.mode) || 'machine';
-    const spec = PRODUCTS[useMode];
+    const spec = PRODUCTS[useMode]; // 하이테크는 도시로 안 가므로 견적도 없다
     const dist = this.distToCity(idx, cityIndex);
     if (!spec || dist === null) return null;
     const c = this.cities[cityIndex];
@@ -813,6 +842,49 @@ class Game {
     }
   }
 
+  /* ---------------------------------------------------------------- 시세 흐름 */
+
+  /**
+   * 자재 기준가를 판 전체의 수요·공급에 맞춰 천천히 움직인다.
+   *
+   * 이게 없으면 자재값이 늘 제자리라 사고팔아 봐야 잔돈만 오가고, 결국 다들
+   * 주식만 하게 된다. 공장이 늘수록 원자재가 귀해져 값이 오르므로
+   * "쌀 때 사서 비쌀 때 판다" 가 실제로 통하게 된다.
+   */
+  updateBaselines(dt) {
+    const supply = {};
+    const demand = {};
+    for (const tile of this.map.tiles) {
+      if (!tile.b || !tile.owner) continue;
+      const spec = BUILDINGS[tile.b];
+      if (spec.out) {
+        for (const [k, r] of Object.entries(spec.out)) supply[k] = (supply[k] || 0) + r;
+      } else {
+        const rate = this.factoryRate(tile);
+        for (const [k, n] of Object.entries(MAKEABLE[tile.mode || 'machine'].recipe)) {
+          demand[k] = (demand[k] || 0) + n * rate;
+        }
+      }
+    }
+
+    for (const [key, m] of Object.entries(this.market)) {
+      const origin = TRADABLE[key].base;
+      if (MATERIALS[key]) {
+        const s = supply[key] || 0;
+        const d = demand[key] || 0;
+        // -1(공급 과잉) ~ +1(품귀)
+        const pressure = (d - s) / Math.max(0.4, s + d);
+        // 수급이 맞더라도 판이 커지면 자원이 귀해진다 — 초반에 사 둘 이유가 된다.
+        // 너무 세게 올리면 생산하는 쪽 마진만 깎이므로 완만하게.
+        const scale = Math.min(1, d / 3);
+        const target = origin * Math.min(2.5, Math.max(0.5, 1 + pressure * 1.2 + scale * 0.35));
+        m.baseline += (target - m.baseline) * 0.05 * dt;
+      }
+      // 사건 배수는 따로 곱해 둔다 (기준가가 흐르는 중에도 사건이 겹칠 수 있다)
+      m.base = Math.round(m.baseline * (m.eventMult || 1) * 100) / 100;
+    }
+  }
+
   /* ---------------------------------------------------------------- 사건 */
 
   /** 원자재 시세와 도시 수요를 흔드는 무작위 사건을 하나 일으킨다 */
@@ -835,8 +907,10 @@ class Game {
       const mat = keys[randInt(keys.length)];
       const up = pick.kind === 'mat-up';
       const mult = up ? 1.6 + Math.random() * 0.6 : 0.45 + Math.random() * 0.25;
-      this.market[mat].base = Math.round(this.market[mat].baseline * mult * 100) / 100;
-      const name = MATERIALS[mat].name;
+      const m = this.market[mat];
+      m.eventMult = mult;
+      m.base = Math.round(m.baseline * mult * 100) / 100; // 바로 반영
+      const name = TRADABLE[mat].name; // 원자재뿐 아니라 하이테크에도 사건이 붙는다
       this.event = {
         kind: pick.kind,
         target: mat,
@@ -871,7 +945,9 @@ class Game {
     if (!this.event) return;
     const e = this.event;
     if (e.kind === 'mat-up' || e.kind === 'mat-down') {
-      this.market[e.target].base = this.market[e.target].baseline;
+      const m = this.market[e.target];
+      m.eventMult = 1;
+      m.base = Math.round(m.baseline * 100) / 100;
     } else {
       this.cities[e.target].boost = 1;
     }
@@ -896,7 +972,8 @@ class Game {
       s.mood += (1 - s.mood) * 0.08 * dt + (Math.random() - 0.5) * 0.28 * Math.sqrt(dt);
       s.mood = Math.min(1.7, Math.max(0.5, s.mood));
 
-      const fair = Math.max(0.05, this.netWorth(p) / TOTAL_SHARES);
+      // 본업 가치 기준 — 주식을 사 모은다고 자기 주가가 오르지는 않는다
+      const fair = Math.max(0.05, this.operatingWorth(p) / TOTAL_SHARES);
       const target = fair * s.mood;
       const gap = (target - s.price) / s.price;
 
@@ -955,7 +1032,7 @@ class Game {
         continue;
       }
       const mode = tile.mode || 'machine';
-      const prod = PRODUCTS[mode];
+      const prod = MAKEABLE[mode];
       let make = this.factoryRate(tile) * dt;
       for (const [k, n] of Object.entries(prod.recipe)) {
         make = Math.min(make, (owner.inv[k] || 0) / n);
@@ -975,6 +1052,8 @@ class Game {
       if (!owner || !city) continue;
 
       const mode = tile.mode || 'machine';
+      // 하이테크 제품은 도시로 보내지 않는다 (시장에서 재고로 판다)
+      if (HITECH[mode]) continue;
       const rate = this.factoryRate(tile);
       const dist = this.distToCity(idx, tile.route);
       let budget = rate * dt;
@@ -1000,7 +1079,8 @@ class Game {
     // 3) 배당 — 주가에 비례해 주주에게 흘러간다
     this.payDividends(dt);
 
-    // 4) 자재 시세는 기준가로, 도시 수요는 100% 로 서서히 회복
+    // 4) 기준가는 수요·공급을 따라 흐르고, 시세는 그 기준가로 서서히 회귀한다
+    this.updateBaselines(dt);
     for (const m of Object.values(this.market)) {
       m.price = Math.round((m.price + (m.base - m.price) * 0.02 * dt) * 100) / 100;
     }
@@ -1059,26 +1139,38 @@ class Game {
 
   /* ---------------------------------------------------------------- 상태 */
 
-  /** 아이템의 현재 평가액 (원자재는 시장가, 제품은 기준가) */
+  /** 아이템의 현재 평가액 (시장에서 거래되는 건 시장가, 도시 제품은 기준가) */
   itemValue(key) {
     if (this.market[key]) return this.market[key].price;
     if (PRODUCTS[key]) return PRODUCTS[key].base;
     return 0;
   }
 
-  netWorth(p) {
+  /**
+   * 주가를 매길 때 쓰는 "본업 가치" — 현금·재고·땅·건물에서 빚을 뺀 값.
+   *
+   * 남의 주식 보유분은 일부러 뺀다. 넣으면 A 가 B 주식을 사는 순간 A 의 순자산이
+   * 늘고, 그러면 A 의 주가도 올라 서로 사 주기만 해도 모두의 주가가 부풀어 오른다.
+   * 그 고리를 끊어야 주가가 실제로 회사를 키운 만큼만 오른다.
+   */
+  operatingWorth(p) {
     let v = p.cash;
     for (const [k, n] of Object.entries(p.inv)) v += this.itemValue(k) * n;
     for (let i = 0; i < this.map.tiles.length; i++) {
       if (this.map.tiles[i].owner === p.id) v += this.tileValue(i);
     }
-    for (const [cid, n] of Object.entries(p.shares)) {
-      if (this.stocks[cid]) v += this.stocks[cid].price * n;
-    }
-    // 빚은 빼고, 공매도한 주식은 언젠가 되사야 하므로 부채로 잡는다
     v -= p.debt;
     for (const [cid, pos] of Object.entries(p.shorts)) {
       if (this.stocks[cid]) v -= this.stocks[cid].price * pos.shares;
+    }
+    return v;
+  }
+
+  /** 최종 순위용 자산 — 여기에는 보유 주식도 포함한다 */
+  netWorth(p) {
+    let v = this.operatingWorth(p);
+    for (const [cid, n] of Object.entries(p.shares)) {
+      if (this.stocks[cid]) v += this.stocks[cid].price * n;
     }
     return Math.round(v);
   }
@@ -1132,6 +1224,7 @@ class Game {
       state.constants = {
         materials: MATERIALS,
         products: PRODUCTS,
+        hitech: HITECH,
         tileTypes: TILE_TYPES,
         buildings: BUILDINGS,
         totalShares: TOTAL_SHARES,
@@ -1151,6 +1244,9 @@ module.exports = {
   Game,
   MATERIALS,
   PRODUCTS,
+  HITECH,
+  MAKEABLE,
+  TRADABLE,
   TILE_TYPES,
   BUILDINGS,
   TRANSPORT,

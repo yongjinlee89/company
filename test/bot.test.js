@@ -104,9 +104,13 @@ function countBuildings(game, id) {
 {
   const g = newGame(200000);
   const attacker = g.player('p1');
-  // 인수까지 얼마 안 남은 수준까지 사들여 위협한다
+  // 인수까지 얼마 안 남은 수준까지 사들여 위협한다.
+  // 유통 물량이 적으므로 창업자가 지분을 내놓은 상황을 가정한다.
   const threat = Math.round(TAKEOVER_SHARES * 0.85);
+  const short = threat - g.availableShares('p0') + 20; // 되살 물량도 조금 남겨 둔다
+  if (short > 0) g.stockTrade('p0', { company: 'p0', qty: short, side: 'sell' });
   assert.ok(g.stockTrade('p1', { company: 'p0', qty: threat, side: 'buy' }).ok);
+  assert.ok(g.availableShares('p0') > 0, '되살 물량이 남아 있어야 방어가 가능하다');
   assert.ok((attacker.shares.p0 || 0) >= TAKEOVER_SHARES * 0.8);
 
   const before = g.player('p0').shares.p0;

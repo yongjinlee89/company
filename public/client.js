@@ -286,8 +286,13 @@ const INV_LABELS = {
   grain: ['🌾', '곡'],
   machine: ['⚙️', '기계'],
   food: ['🍞', '식품'],
+  semi: ['💾', '반도체'],
+  car: ['🚗', '자동차'],
 };
+// 하이테크는 손대기 전까지 상단바를 넓히지 않도록 필요할 때만 보여준다
+const INV_OPTIONAL = ['semi', 'car'];
 const invNums = {};
+const invItems = {};
 
 /** 자릿수가 들쭉날쭉하지 않도록 100 이상은 정수로만 보여준다 */
 function fmtInv(n) {
@@ -310,14 +315,26 @@ function renderInventory(my) {
       item.appendChild(num);
       inv.appendChild(item);
       invNums[k] = num;
+      invItems[k] = item;
     }
     inv.dataset.built = '1';
   }
   inv.classList.toggle('hidden', !my);
   if (!my) return;
+
+  // 하이테크 공장을 돌리고 있으면 재고가 0이어도 보여 준다
+  const making = new Set();
+  for (const t of S.game.map.tiles) {
+    if (t.owner === ME && t.b === 'factory' && t.mode) making.add(t.mode);
+  }
+
   for (const k of Object.keys(INV_LABELS)) {
-    const text = fmtInv(my.inv[k] || 0);
+    const n = my.inv[k] || 0;
+    const text = fmtInv(n);
     if (invNums[k].textContent !== text) invNums[k].textContent = text;
+    if (INV_OPTIONAL.includes(k)) {
+      invItems[k].classList.toggle('hidden', n < 0.05 && !making.has(k));
+    }
   }
 }
 
@@ -541,8 +558,19 @@ function renderPane(name, sig, build) {
 
 function nameOf(key) {
   const C = S.game.constants;
-  return (C.materials[key] && C.materials[key].name) || (C.products[key] && C.products[key].name) || key;
+  const spec = C.materials[key] || C.products[key] || (C.hitech && C.hitech[key]);
+  return spec ? spec.name : key;
 }
+
+/** 공장이 만들 수 있는 모든 품목 (도시 배송 + 하이테크) */
+function makeable() {
+  const C = S.game.constants;
+  return { ...C.products, ...(C.hitech || {}) };
+}
+const isHitech = (key) => {
+  const C = S.game.constants;
+  return !!(C.hitech && C.hitech[key]);
+};
 
 /** 거리·물동량에 따라 어떤 운송 수단이 가장 싼지 클라이언트에서도 똑같이 계산한다 */
 const TRANSPORT = [
@@ -690,20 +718,30 @@ function buildTilePanel(panel, tile, live) {
 
     panel.appendChild(el('div', 'tp-row', `🏭 공장 ${level}단계`));
 
-    const modeRow = el('div', 'tp-choices');
-    for (const [key, p] of Object.entries(C.products)) {
-      const recipe = Object.entries(p.recipe)
-        .map(([k, n]) => `${nameOf(k)}×${n}`)
-        .join('+');
-      // 0.18 과 0.22 가 똑같이 "0.2" 로 보이지 않도록 두 자리까지 쓴다
-      const rate = Math.round(p.rate * level * 100) / 100;
-      // 재료는 툴팁으로 뺀다 — 한 줄에 들어가야 패널이 두꺼워지지 않는다
-      const btn = el('button', 'chip' + (mode === key ? ' on' : ''), `${p.name} ${rate}/초`);
-      btn.title = `재료 ${recipe}`;
-      btn.addEventListener('click', () => emit('setFactoryMode', { idx: selectedTile, mode: key }));
-      modeRow.appendChild(btn);
-    }
-    panel.appendChild(modeRow);
+    // 도시로 보내는 제품과, 재고로 쌓아 시장에 파는 하이테크를 나눠서 보여준다
+    const modeGroup = (label, hint, specs) => {
+      if (!specs || !Object.keys(specs).length) return;
+      const row = el('div', 'tp-choices');
+      // 라벨을 칩과 같은 줄에 둬서 패널이 두꺼워지지 않게 한다
+      const tag = el('span', 'small mode-tag', label);
+      tag.title = hint;
+      row.appendChild(tag);
+      for (const [key, p] of Object.entries(specs)) {
+        const recipe = Object.entries(p.recipe)
+          .map(([k, n]) => `${nameOf(k)}×${n}`)
+          .join('+');
+        // 0.18 과 0.22 가 똑같이 "0.2" 로 보이지 않도록 두 자리까지 쓴다
+        const rate = Math.round(p.rate * level * 100) / 100;
+        // 재료는 툴팁으로 뺀다 — 한 줄에 들어가야 패널이 두꺼워지지 않는다
+        const btn = el('button', 'chip' + (mode === key ? ' on' : ''), `${p.name} ${rate}/초`);
+        btn.title = `재료 ${recipe}`;
+        btn.addEventListener('click', () => emit('setFactoryMode', { idx: selectedTile, mode: key }));
+        row.appendChild(btn);
+      }
+      panel.appendChild(row);
+    };
+    modeGroup('🚚 배송', '도시로 자동 배송해 판매합니다', C.products);
+    modeGroup('🔬 하이테크', '재고로 쌓아 두었다가 시장 탭에서 팝니다', C.hitech);
 
     if (level < fSpec.maxLevel) {
       const cost = fSpec.upgradeCost * level;
@@ -719,41 +757,57 @@ function buildTilePanel(panel, tile, live) {
       idleRow.classList.toggle('hidden', !(t && t.idle));
     });
 
-    // 배송 노선 — 도시별 초당 순이익 (수요에 따라 계속 변한다)
-    panel.appendChild(el('div', 'tp-row', '🚚 배송 노선 · 초당 순이익'));
-    const rows = [];
-    g.cities.forEach((c, ci) => {
-      const row = el('button', 'route-row' + (tile.route === ci ? ' on' : ''));
-      const net = el('span', 'route-net');
-      const info = el('span', 'route-info small');
-      row.appendChild(el('span', 'route-city', c.name));
-      row.appendChild(net);
-      row.appendChild(info);
-      row.addEventListener('click', () =>
-        emit('setRoute', { idx: selectedTile, city: S.game.map.tiles[selectedTile].route === ci ? null : ci })
-      );
-      panel.appendChild(row);
-      rows.push({ ci, row, net, info });
-    });
+    if (isHitech(mode)) {
+      // 하이테크는 도시로 안 간다 — 재고로 쌓아 시장에서 판다
+      const note = el('div', 'tp-row small hitech-note');
+      panel.appendChild(note);
+      live.push(() => {
+        const mk = S.game.market[mode];
+        const held = me() ? me().inv[mode] || 0 : 0;
+        note.textContent = `재고 ${fmt1(held)}개 · 시세 ${fmt1(mk ? mk.price : 0)}/개 — 시장 탭에서 파세요`;
+      });
+    } else {
+      // 배송 노선 — 도시별 초당 순이익 (수요에 따라 계속 변한다)
+      panel.appendChild(el('div', 'tp-row', '🚚 배송 노선 · 초당 순이익'));
+      const rows = [];
+      g.cities.forEach((c, ci) => {
+        const row = el('button', 'route-row' + (tile.route === ci ? ' on' : ''));
+        const net = el('span', 'route-net');
+        const info = el('span', 'route-info small');
+        row.appendChild(el('span', 'route-city', c.name));
+        row.appendChild(net);
+        row.appendChild(info);
+        row.addEventListener('click', () =>
+          emit('setRoute', { idx: selectedTile, city: S.game.map.tiles[selectedTile].route === ci ? null : ci })
+        );
+        panel.appendChild(row);
+        rows.push({ ci, row, net, info });
+      });
 
-    const hint = el('div', 'tp-row small', '노선을 고르면 만들어지는 대로 자동 판매됩니다.');
-    panel.appendChild(hint);
+      const hint = el('div', 'tp-row small');
+      panel.appendChild(hint);
 
-    live.push(() => {
-      const t = S.game.map.tiles[selectedTile];
-      if (!t) return;
-      const m = t.mode || 'machine';
-      const quotes = rows.map((r) => ({ ...r, q: routeQuote(selectedTile, r.ci, m) }));
-      const bestNet = Math.max(...quotes.map((x) => (x.q ? x.q.net : -Infinity)));
-      for (const { q, row, net, info } of quotes) {
-        if (!q) continue;
-        net.textContent = `${q.net >= 0 ? '+' : ''}${fmt1(q.net)}/초`;
-        net.classList.toggle('down', q.net < 0);
-        info.textContent = `${q.dist}칸 · ${q.transport.name} -${fmt1(q.transport.cost)}/초`;
-        row.classList.toggle('best', q.net === bestNet);
-      }
-      hint.classList.toggle('hidden', t.route !== null && t.route !== undefined);
-    });
+      live.push(() => {
+        const t = S.game.map.tiles[selectedTile];
+        if (!t) return;
+        const m = t.mode || 'machine';
+        const quotes = rows.map((r) => ({ ...r, q: routeQuote(selectedTile, r.ci, m) }));
+        const bestNet = Math.max(...quotes.map((x) => (x.q ? x.q.net : -Infinity)));
+        for (const { q, row, net, info } of quotes) {
+          if (!q) continue;
+          net.textContent = `${q.net >= 0 ? '+' : ''}${fmt1(q.net)}/초`;
+          net.classList.toggle('down', q.net < 0);
+          info.textContent = `${q.dist}칸 · ${q.transport.name} -${fmt1(q.transport.cost)}/초`;
+          row.classList.toggle('best', q.net === bestNet);
+        }
+        // 노선을 끄면 재고가 쌓인다 — 하이테크 재료를 모으는 방법이다
+        const off = t.route === null || t.route === undefined;
+        hint.textContent = off
+          ? `노선 없음 — ${nameOf(m)}가 재고로 쌓입니다 (하이테크 재료용)`
+          : '만들어지는 대로 자동 판매됩니다.';
+        hint.classList.toggle('listed', off);
+      });
+    }
   }
 
   // 내 땅이면 팔 수 있다 — 자주 쓰는 기능이 아니므로 접어 둔다
@@ -840,7 +894,14 @@ function renderMarket() {
     box.innerHTML = '';
     box.appendChild(el('p', 'tab-hint', '사면 오르고 팔면 내립니다. 시간이 지나면 기준가로 돌아갑니다.'));
 
-    for (const key of Object.keys(g.market)) {
+    // 원자재를 먼저, 하이테크 제품을 뒤에 묶어서 보여준다
+    const keys = Object.keys(g.market).sort((a, b) => (isHitech(a) ? 1 : 0) - (isHitech(b) ? 1 : 0));
+    let hitechHeaderDone = false;
+    for (const key of keys) {
+      if (isHitech(key) && !hitechHeaderDone) {
+        hitechHeaderDone = true;
+        box.appendChild(el('p', 'tab-hint', '🔬 하이테크 — 공장에서 만들어 재고로 쌓았다가 여기서 팝니다.'));
+      }
       const row = el('div', 'trade-row');
       const info = el('div', 'trade-info');
       info.appendChild(el('b', '', nameOf(key)));

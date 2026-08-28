@@ -195,10 +195,14 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
 /* ---------------- 주식 물량 (외부 투자자가 있어도 인수 가능) ---------------- */
 {
   const g = newGame(1000000);
+  // 창업자가 인수선을 넘길 만큼 지분을 내놓은 상황을 만든다
+  g.stockTrade('b', { company: 'b', qty: TAKEOVER_SHARES, side: 'sell' });
+  const total = g.availableShares('b');
+  assert.ok(total >= TAKEOVER_SHARES);
+
   // 외부 투자자가 물량을 대부분 사가도, 사람은 그들에게서 되사 올 수 있어야 한다
-  const total = g.stocks.b.float;
-  g.stocks.b.float = 5;
   g.stocks.b.npc = total - 5;
+  g.stocks.b.float = 5;
   assert.strictEqual(g.availableShares('b'), total);
 
   assert.ok(

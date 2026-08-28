@@ -419,7 +419,7 @@ input:focus, select:focus {
   position: absolute;
   left: 16px;
   bottom: 16px;
-  width: min(300px, calc(100% - 32px));
+  width: min(340px, calc(100% - 24px));
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -457,8 +457,23 @@ input:focus, select:focus {
 
 .tp-choices {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 5px;
   flex-wrap: wrap;
+}
+
+.mode-tag {
+  min-width: 4em;
+  flex-shrink: 0;
+}
+
+.tp-choices .chip {
+  padding: 3px 8px;
+  font-size: 0.78rem;
+}
+
+.hitech-note {
+  color: var(--accent);
 }
 
 .wide {
