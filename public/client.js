@@ -365,7 +365,7 @@ const TILE_COLORS = {
   city: '#5a4a2a',
 };
 const TILE_ICONS = { iron: '⛏️', oil: '🛢️', farm: '🌱', mountain: '⛰️', city: '🏙️' };
-const BUILDING_ICONS = { mine: '⚒️', rig: '🏗️', farm: '🚜', factory: '🏭', rental: '🏬' };
+const BUILDING_ICONS = { mine: '⚒️', rig: '🏗️', farm: '🚜', factory: '🏭', rental: '🏬', depot: '🚛' };
 
 /**
  * 맵이 화면을 다 먹지 않도록 남는 공간의 80% 만 쓴다 (나머지는 메뉴 몫).
@@ -715,7 +715,9 @@ function buildTilePanel(panel, tile, live) {
             .join(', ')
         : spec.rent
           ? '임대료 수입 (공급이 늘면 임대료는 내려감)'
-          : '제품 생산 (기계/식품/하이테크)';
+          : spec.freight
+            ? '운임 수입 (판에서 오가는 화물이 많을수록 벌이가 좋음)'
+            : '제품 생산 (기계/식품/하이테크)';
       costButton(`${spec.name} 건설 (${spec.cost}) — ${desc}`, spec.cost, () =>
         emit('build', { idx: selectedTile, kind })
       );
@@ -728,7 +730,7 @@ function buildTilePanel(panel, tile, live) {
     const level = tile.level || 1;
     if (!spec.maxLevel || level >= spec.maxLevel) return;
     const cost = spec.upgradeCost * level;
-    const what = spec.rent ? '임대료' : '생산';
+    const what = spec.rent ? '임대료' : spec.freight ? '운임' : '생산';
     costButton(`⬆️ ${level + 1}단계 증설 (${cost}) · ${what} ${level + 1}배`, cost, () =>
       emit('upgrade', { idx: selectedTile })
     );
@@ -760,9 +762,28 @@ function buildTilePanel(panel, tile, live) {
     panel.appendChild(note);
     live.push(() => {
       const supply = S.game.rentalSupply || 0;
-      const rent = (spec.rent * level) / (1 + supply * C.rentSaturation);
+      const demand = S.game.rentalDemand || 1;
+      const rent = (spec.rent * level * demand) / (1 + supply * C.rentSaturation);
       row.textContent = `🏬 ${spec.name} ${level}단계 · 임대료 +${fmt1(rent)}/초`;
-      note.textContent = `판 전체 임대 공급 ${supply} — 늘어날수록 임대료가 내려갑니다`;
+      note.textContent = `수요 ${fmt1(demand)}배 · 공급 ${supply} — 도시가 커지면 오르고, 상가가 늘면 내려갑니다`;
+    });
+    upgradeButton();
+  }
+
+  // 물류 센터 — 판에서 오가는 화물이 수요, 물류 센터 총량이 공급
+  if (tile.owner === ME && tile.b === 'depot') {
+    const spec = C.buildings.depot;
+    const level = tile.level || 1;
+    const row = el('div', 'tp-row');
+    const note = el('div', 'tp-row small');
+    panel.appendChild(row);
+    panel.appendChild(note);
+    live.push(() => {
+      const supply = S.game.depotSupply || 0;
+      const demand = S.game.freightDemand || 0;
+      const pay = (spec.freight * level * demand) / (1 + supply * C.freightSaturation);
+      row.textContent = `🚛 ${spec.name} ${level}단계 · 운임 +${fmt1(pay)}/초`;
+      note.textContent = `화물 ${fmt1(demand)}/초 · 물류 공급 ${supply} — 남들이 많이 실어 나를수록 벌이가 좋습니다`;
     });
     upgradeButton();
   }
@@ -1020,6 +1041,35 @@ function renderMarket() {
     }
 
     box.appendChild(el('p', 'tab-hint', '도시 수요 — 많이 팔린 곳은 값이 내려가고 시간이 지나면 회복됩니다.'));
+
+    // 도시가 커지면 상가·물류 수요도 함께 움직인다
+    const rentRow = el('div', 'city-row');
+    rentRow.appendChild(el('b', '', '🏬 임대'));
+    const rentInfo = el('span', 'small');
+    rentRow.appendChild(rentInfo);
+    box.appendChild(rentRow);
+
+    const freightRow = el('div', 'city-row');
+    freightRow.appendChild(el('b', '', '🚛 운송'));
+    const freightInfo = el('span', 'small');
+    freightRow.appendChild(freightInfo);
+    box.appendChild(freightRow);
+
+    live.push(() => {
+      const gg = S.game;
+      const CC = gg.constants;
+      const rSupply = gg.rentalSupply || 0;
+      const rDemand = gg.rentalDemand || 1;
+      const rent = (CC.buildings.rental.rent * rDemand) / (1 + rSupply * CC.rentSaturation);
+      rentInfo.textContent = `수요 ${fmt1(rDemand)}배 · 공급 ${rSupply} · 1단계당 ${fmt1(rent)}/초`;
+      rentInfo.classList.toggle('down', rSupply > 0 && rent < CC.buildings.rental.rent);
+
+      const dSupply = gg.depotSupply || 0;
+      const fDemand = gg.freightDemand || 0;
+      const pay = (CC.buildings.depot.freight * fDemand) / (1 + dSupply * CC.freightSaturation);
+      freightInfo.textContent = `화물 ${fmt1(fDemand)}/초 · 물류 ${dSupply} · 1단계당 ${fmt1(pay)}/초`;
+    });
+
     g.cities.forEach((c, ci) => {
       const row = el('div', 'city-row');
       row.appendChild(el('b', '', `🏙️ ${c.name}`));

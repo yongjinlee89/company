@@ -152,7 +152,21 @@ const BUILDINGS = {
     maxLevel: MAX_LEVEL,
     upgradeCost: 240,
   },
+  // 물류 센터 — 판에서 오가는 화물을 받아 운임을 번다.
+  // 수요는 "지금 도시로 실려 나가는 물량", 공급은 물류 센터 총량이다.
+  // 남들이 많이 실어 나를수록 벌이가 좋아지고, 물류 센터가 많아지면 나눠 갖는다.
+  depot: {
+    name: '물류 센터',
+    cost: 220,
+    on: 'plain',
+    freight: 1.2, // 화물 1/초당 레벨당 운임
+    maxLevel: MAX_LEVEL,
+    upgradeCost: 260,
+  },
 };
+
+// 물류 센터가 1 늘 때마다 운임이 이 비율만큼 희석된다
+const FREIGHT_SATURATION = 0.08;
 
 // 임대 공급이 1 늘 때마다 임대료가 이 비율만큼 희석된다
 const RENT_SATURATION = 0.06;
@@ -167,6 +181,16 @@ const RENT_INDUSTRY_GROWTH = 0.005;
 // 생산이 늘면 수요도 함께 늘어야, 증설·연구로 생산성을 올린 게
 // 제 손으로 시세를 무너뜨리는 일이 되지 않는다.
 const WORLD_DEMAND_SHARE = 0.35;
+
+/*
+ * 하이테크(반도체 등)는 원자재와 달리 캐는 양·굽는 양으로 시세가 정해지지 않는다
+ * (생산·소모가 다 회사 안에서 끝나 세상 수급과 안 이어진다). 그래서 대신 주가의
+ * mood 와 같은 방식으로 기준가 자체가 계속 랜덤하게 출렁이게 한다 — 세계 시황을
+ * 흉내내는 셈이다. sigma 를 mood(0.28)보다 크게 잡아서 원자재보다 변동이 크게 한다.
+ */
+const HITECH_VOL_THETA = 0.06; // 제자리(1)로 돌아오려는 힘 — 작을수록 오래 치우쳐 있는다
+const HITECH_VOL_SIGMA = 0.4; // 흔들리는 폭
+const HITECH_VOL_RANGE = [0.5, 1.9]; // 기준가가 원래값의 이 배수 사이를 오간다
 
 const CITY_NAMES = ['서울', '부산', '광주', '대전'];
 
@@ -332,9 +356,9 @@ class Game {
     // 원자재와 하이테크 제품이 같은 시장에서 거래된다
     this.market = {};
     for (const [key, m] of Object.entries(TRADABLE)) {
-      // baseline 은 수요·공급에 따라 흐르고, eventMult 는 사건이 곱하는 배수.
-      // base(회귀 목표) = baseline × eventMult
-      this.market[key] = { price: m.base, base: m.base, baseline: m.base, eventMult: 1 };
+      // baseline 은 수요·공급(원자재) 또는 세계 시황 랜덤워크(하이테크)에 따라 흐르고,
+      // eventMult 는 사건이 곱하는 배수. base(회귀 목표) = baseline × eventMult
+      this.market[key] = { price: m.base, base: m.base, baseline: m.base, eventMult: 1, vol: 1 };
     }
 
     this.players = playerInfos.map((info, i) => ({
@@ -812,6 +836,41 @@ class Game {
     return (BUILDINGS.rental.rent * level * want) / (1 + total * RENT_SATURATION);
   }
 
+  /* ---------------------------------------------------------------- 운송업 */
+
+  /** 지금 도시로 실려 나가는 총 물량 (초당) — 운송업의 수요 */
+  freightDemand() {
+    let n = 0;
+    for (const tile of this.map.tiles) {
+      if (tile.b !== 'factory' || !tile.owner) continue;
+      if (tile.route === null || tile.route === undefined) continue;
+      if (HITECH[tile.mode]) continue; // 하이테크는 도시로 안 간다
+      n += this.factoryRate(tile);
+    }
+    return n;
+  }
+
+  /** 지도 전체의 물류 센터 규모 (레벨 합) — 운송업의 공급 */
+  depotSupply() {
+    let n = 0;
+    for (const tile of this.map.tiles) {
+      if (tile.b === 'depot' && tile.owner) n += tile.level || 1;
+    }
+    return n;
+  }
+
+  /**
+   * 물류 센터 하나가 지금 벌어들이는 초당 운임.
+   * 판에서 오가는 화물이 많을수록 벌이가 좋고, 물류 센터가 많을수록 나눠 갖는다.
+   */
+  freightPerSec(tile, demand, supply) {
+    if (!tile || tile.b !== 'depot') return 0;
+    const want = demand === undefined ? this.freightDemand() : demand;
+    const total = supply === undefined ? this.depotSupply() : supply;
+    const level = tile.level || 1;
+    return (BUILDINGS.depot.freight * level * want) / (1 + total * FREIGHT_SATURATION);
+  }
+
   /** 자원 건물의 초당 생산량 (증설 레벨 + 연구 보너스 반영) */
   buildingOutput(tile) {
     const spec = BUILDINGS[tile.b];
@@ -1104,9 +1163,17 @@ class Game {
         const pressure = (d - s) / Math.max(0.4, s + d);
         const target = origin * Math.min(1.6, Math.max(0.7, 1 + pressure * 0.6));
         m.baseline += (target - m.baseline) * 0.05 * dt;
+      } else if (HITECH[key]) {
+        // 생산·소모가 회사 안에서 끝나 세상 수급과 안 이어지므로, 주가 mood 처럼
+        // 기준가 자체가 계속 랜덤하게 흔들리게 한다 (원자재보다 변동폭이 크다).
+        m.vol += (1 - m.vol) * HITECH_VOL_THETA * dt + (Math.random() - 0.5) * HITECH_VOL_SIGMA * Math.sqrt(dt);
+        m.vol = Math.min(HITECH_VOL_RANGE[1], Math.max(HITECH_VOL_RANGE[0], m.vol));
+        const target = origin * m.vol;
+        m.baseline += (target - m.baseline) * 0.05 * dt;
       }
-      // 사건 배수는 따로 곱해 둔다 (기준가가 흐르는 중에도 사건이 겹칠 수 있다)
-      m.base = Math.round(m.baseline * (m.eventMult || 1) * 100) / 100;
+      // 사건 배수는 따로 곱해 둔다 (기준가가 흐르는 중에도 사건이 겹칠 수 있다).
+      // 여기서 반올림하면 baseline 과 미세하게 어긋나므로 표시할 때만 다듬는다.
+      m.base = m.baseline * (m.eventMult || 1);
     }
   }
 
@@ -1135,7 +1202,7 @@ class Game {
       const mult = up ? 1.3 + Math.random() * 0.25 : 0.6 + Math.random() * 0.15;
       const m = this.market[mat];
       m.eventMult = mult;
-      m.base = Math.round(m.baseline * mult * 100) / 100; // 바로 반영
+      m.base = m.baseline * mult; // 바로 반영
       const name = TRADABLE[mat].name; // 원자재뿐 아니라 하이테크에도 사건이 붙는다
       this.event = {
         kind: pick.kind,
@@ -1189,7 +1256,7 @@ class Game {
     if (e.kind === 'mat-up' || e.kind === 'mat-down') {
       const m = this.market[e.target];
       m.eventMult = 1;
-      m.base = Math.round(m.baseline * 100) / 100;
+      m.base = m.baseline;
     } else if (e.kind === 'market-crash' || e.kind === 'market-rally') {
       this.marketMult = 1;
     } else {
@@ -1378,6 +1445,19 @@ class Game {
       }
     }
 
+    // 2-c) 운임 — 판에서 오가는 화물이 많을수록 벌고, 물류 센터가 많을수록 나눠 갖는다
+    const depotSupply = this.depotSupply();
+    if (depotSupply > 0) {
+      const freight = this.freightDemand();
+      if (freight > 0) {
+        for (const tile of this.map.tiles) {
+          if (tile.b !== 'depot' || !tile.owner) continue;
+          const owner = this.player(tile.owner);
+          if (owner) this.payIncome(owner, this.freightPerSec(tile, freight, depotSupply) * dt);
+        }
+      }
+    }
+
     // 3) 배당 — 주가에 비례해 주주에게 흘러간다
     this.payDividends(dt);
 
@@ -1526,6 +1606,8 @@ class Game {
       elapsed: Math.round(this.elapsed * 10) / 10,
       rentalSupply: this.rentalSupply(),
       rentalDemand: Math.round(this.rentalDemand() * 100) / 100,
+      depotSupply: this.depotSupply(),
+      freightDemand: Math.round(this.freightDemand() * 100) / 100,
       duration: this.settings.duration,
       remaining: Math.max(0, Math.round((this.settings.duration - this.elapsed) * 10) / 10),
       ended: this.ended,
@@ -1585,6 +1667,7 @@ class Game {
         maxShort: MAX_SHORT,
         resaleRate: RESALE_RATE,
         rentSaturation: RENT_SATURATION,
+        freightSaturation: FREIGHT_SATURATION,
         research: RESEARCH,
         researchMax: RESEARCH_MAX,
       };

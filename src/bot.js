@@ -239,10 +239,22 @@ function buildUp(game, me) {
   if (tryUpgrade(game, me)) return true;
   if (tryAcquire(game, me, 'factory')) return true;
 
-  // 더 지을 게 없으면 임대업. 다만 임대료가 유지비의 두 배도 안 되면 짓지 않는다.
+  // 더 지을 게 없으면 임대업이나 운송업. 벌이가 유지비의 두 배도 안 되면 짓지 않는다.
+  const worthIt = (spec, income) => income > spec.cost * 0.0025 * 2;
+
   const rentSpec = BUILDINGS.rental;
-  const rent = rentSpec.rent / (1 + game.rentalSupply() * 0.06);
-  if (rent > rentSpec.cost * 0.0025 * 2) return tryAcquire(game, me, 'rental');
+  const rent = (rentSpec.rent * game.rentalDemand()) / (1 + game.rentalSupply() * 0.06);
+
+  const depotSpec = BUILDINGS.depot;
+  const freight = (depotSpec.freight * game.freightDemand()) / (1 + game.depotSupply() * 0.08);
+
+  // 더 잘 버는 쪽부터 시도한다
+  const first = freight > rent ? 'depot' : 'rental';
+  const second = first === 'depot' ? 'rental' : 'depot';
+  const income = { rental: rent, depot: freight };
+  for (const kind of [first, second]) {
+    if (worthIt(BUILDINGS[kind], income[kind]) && tryAcquire(game, me, kind)) return true;
+  }
   return false;
 }
 

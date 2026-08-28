@@ -401,7 +401,8 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   for (let t = 0; t < 200 && g.event; t += 0.25) g.tick(0.25);
   assert.strictEqual(g.event, null, '사건은 언젠가 끝난다');
   for (const m of Object.values(g.market)) {
-    assert.strictEqual(m.base, m.baseline, '기준가가 원래대로 돌아온다');
+    // 하이테크는 기준가 자체가 계속 출렁이므로(반올림 오차만큼) 근사 비교한다
+    assert.ok(Math.abs(m.base - m.baseline) < 0.01, '기준가가 원래대로 돌아온다 (eventMult 해제)');
   }
   for (const c of g.cities) assert.strictEqual(c.boost, 1, '도시 배수도 원래대로');
   assert.strictEqual(g.marketMult, 1, '전체 주가 배수도 원래대로');

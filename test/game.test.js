@@ -373,6 +373,70 @@ function run(game, seconds) {
   console.log(`✓ 임대업 (1채 ${fmt(rent1)}/초 → 여러 채 깔리면 ${fmt(g.rentPerSec(t1) / t1.level)}/초)`);
 }
 
+/* ---------------- 운송업 (오가는 화물이 수요) ---------------- */
+{
+  const g = newGame(50000);
+  const a = g.player('a');
+  const b = g.player('b');
+  const plain = () => g.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
+
+  // 아무도 배송하지 않으면 화물이 없다
+  assert.strictEqual(g.freightDemand(), 0, '오가는 화물이 없으면 수요도 0');
+
+  const d1 = plain();
+  g.buyTile('a', d1);
+  g.build('a', d1, 'depot');
+  const depot = g.map.tiles[d1];
+  assert.strictEqual(g.depotSupply(), 1);
+  assert.strictEqual(g.freightPerSec(depot), 0, '화물이 없으면 운임도 없다');
+
+  const cash0 = a.cash;
+  run(g, 10);
+  assert.ok(a.cash < cash0, '화물이 없으면 유지비만 나간다');
+
+  // b 가 공장을 돌려 도시로 실어 나르면 화물이 생긴다.
+  // 물동량이 적으면 유지비도 못 내므로, 실제로 붐비는 상황을 만든다.
+  const f1 = plain();
+  g.buyTile('b', f1);
+  g.build('b', f1, 'factory'); // 건설 시 노선이 자동으로 잡힌다
+  b.cash = 999999;
+  while (g.upgradeCost(g.map.tiles[f1]) !== null) g.upgradeBuilding('b', f1);
+  b.inv.iron = 50000;
+  b.inv.oil = 50000;
+
+  const freight = g.freightDemand();
+  assert.ok(freight > 0, '남이 배송하면 화물 수요가 생긴다');
+  assert.ok(g.freightPerSec(depot) > 0, '그 화물로 운임을 번다');
+
+  const cash1 = a.cash;
+  run(g, 10);
+  assert.ok(a.cash > cash1, '남이 실어 나르는 만큼 내가 번다');
+
+  // 하이테크는 도시로 안 가므로 화물에 안 잡힌다
+  g.setFactoryMode('b', f1, 'semi');
+  assert.strictEqual(g.freightDemand(), 0, '하이테크는 도시 배송이 아니라 화물이 아니다');
+  g.setFactoryMode('b', f1, 'machine');
+
+  // 물류 센터가 늘면 1채당 운임이 줄어든다
+  const before = g.freightPerSec(depot);
+  for (let k = 0; k < 5; k++) {
+    const idx = plain();
+    g.buyTile('b', idx);
+    g.build('b', idx, 'depot');
+  }
+  assert.ok(g.freightPerSec(depot) < before, `물류가 늘면 나눠 갖는다 (${fmt(before)} → ${fmt(g.freightPerSec(depot))})`);
+
+  // 증설하면 그 센터 몫이 커진다
+  const mine0 = g.freightPerSec(depot);
+  g.upgradeBuilding('a', d1);
+  assert.ok(g.freightPerSec(depot) > mine0, '증설하면 더 많이 받는다');
+
+  // 물류 센터는 생산도 배송도 하지 않는다
+  assert.ok(!g.setRoute('a', d1, 0).ok);
+  assert.ok(!g.setFactoryMode('a', d1, 'machine').ok);
+  console.log(`✓ 운송업 (화물 ${fmt(freight)}/초 → 운임 ${fmt(before)}/초, 물류가 늘면 분산)`);
+}
+
 /* ---------------- 임대 수요는 시간·산업과 함께 자란다 ---------------- */
 {
   const g = newGame(50000, 600);
@@ -631,6 +695,26 @@ function run(game, seconds) {
   console.log(`✓ 하이테크 (원자재로 직접 생산, 반도체 ${HITECH.semi.base})`);
 }
 
+/* ---------------- 반도체 시세는 스스로 출렁인다 ---------------- */
+{
+  const g = newGame(10000, 1200);
+
+  // updateBaselines 만 반복 호출해 사건·거래 없이 순수한 변동만 관찰한다
+  let lo = g.market.semi.baseline;
+  let hi = g.market.semi.baseline;
+  for (let t = 0; t < 300; t += 0.25) {
+    g.updateBaselines(0.25);
+    lo = Math.min(lo, g.market.semi.baseline);
+    hi = Math.max(hi, g.market.semi.baseline);
+  }
+  const swing = (hi - lo) / HITECH.semi.base;
+  assert.ok(swing > 0.15, `반도체 기준가가 크게 출렁인다 (변동폭 ${(swing * 100).toFixed(1)}%)`);
+
+  // 아무도 캐거나 만들지 않는 원자재는 공급·수요가 0이라 기준가가 제자리를 지킨다
+  assert.strictEqual(g.market.iron.baseline, MATERIALS.iron.base, '손대지 않은 원자재는 기준가가 그대로');
+  console.log(`✓ 반도체 시세 자체 변동 (${(swing * 100).toFixed(1)}% 스윙, 손대지 않은 원자재는 제자리)`);
+}
+
 /* ---------------- 주가는 본업 가치만 따라간다 ---------------- */
 {
   const g = newGame(10000);
@@ -649,16 +733,26 @@ function run(game, seconds) {
   run(g, 20);
   assert.ok(g.stocks.a.price <= priceA0 * 1.3, '남의 주식을 샀다고 내 주가가 뛰지 않는다');
 
-  // 반대로 실제로 회사를 키우면 주가가 오른다
+  // 반대로 실제로 회사를 키우면 주가가 오른다.
+  // 시장 심리(mood)는 난수라 단기 주가를 크게 흔든다 — 여기서 보려는 건
+  // "본업 가치가 주가를 끌어올린다" 이므로 심리를 1로 고정해 두고 본다.
+  // (광산만 세우면 팔 곳이 없어 철값이 떨어지므로, 실제로 돈이 도는 공장으로 본다)
   const g2 = newGame(10000);
   const builder = g2.player('a');
-  const idx = g2.map.tiles.findIndex((t) => t.t === 'iron');
+  const idx = g2.map.tiles.findIndex((t) => t.t === 'plain');
   g2.buyTile('a', idx);
-  g2.build('a', idx, 'mine');
-  builder.inv.iron = 300;
+  g2.build('a', idx, 'factory'); // 건설 시 배송 노선이 자동으로 잡힌다
+  builder.inv.iron = 2000;
+  builder.inv.oil = 2000;
   const before = g2.stocks.a.price;
-  run(g2, 30);
-  assert.ok(g2.stocks.a.price > before * 0.9, '본업을 키우면 주가가 따라온다');
+  const worth0 = g2.operatingWorth(builder);
+  for (let t = 0; t < 60; t += 0.25) {
+    g2.tick(0.25);
+    g2.stocks.a.mood = 1;
+    g2.marketMult = 1;
+  }
+  assert.ok(g2.operatingWorth(builder) > worth0, '공장이 돌면 회사 가치가 는다');
+  assert.ok(g2.stocks.a.price > before, '그만큼 주가도 따라 오른다');
   console.log('✓ 주가 기준 = 본업 가치 (주식 상호매수로 부풀지 않음)');
 }
 
