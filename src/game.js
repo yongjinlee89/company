@@ -64,6 +64,20 @@ const INCOME_MULTIPLE = 100;
 // 이 값이 크면 시세가 몇 초 만에 배로 튄다.
 const MAT_IMPACT = 0.002;
 const MAT_SPREAD = 0.005; // 매수는 비싸게, 매도는 싸게 (왕복 차익 방지)
+const MARKET_REVERT = 0.06; // 시세가 기준가로 돌아오는 속도 (초당)
+
+/*
+ * 하이테크는 개당 값이 커서 몇 개만 풀려도 시장이 출렁여야 한다.
+ * 원자재와 같은 계수를 쓰면 사실상 값이 고정된 무한 판매처가 되어
+ * 도시 배송보다 압도적으로 유리해진다.
+ * 그래서 체결 충격은 훨씬 크게, 회복은 훨씬 느리게 잡는다.
+ */
+const HITECH_IMPACT = 0.02;
+const HITECH_REVERT = 0.01;
+// 시세 하한 — 기준가 대비. 하이테크는 하한이 높으면 아무리 쏟아부어도
+// 개당 값이 보장되어 무한 판매처가 된다.
+const PRICE_FLOOR = 0.4;
+const HITECH_FLOOR = 0.18;
 
 /**
  * 연구개발. 단계마다 회사 전체에 붙는 영구 보너스라, 후반에 남는 돈을 넣을 곳이 된다.
@@ -105,7 +119,9 @@ const PRODUCTS = {
  * 그 한 단계가 지나치게 번거로워서 원자재로 바꿨다.
  */
 const HITECH = {
-  semi: { name: '반도체', base: 200, recipe: { iron: 1, oil: 4 }, rate: 0.07 },
+  // 재료값(철1+원유4 ≈ 66)의 두 배 남짓. 기계(재료 34 → 60)와 마진율을 맞춰
+  // 하이테크만 압도적으로 유리해지지 않게 한다.
+  semi: { name: '반도체', base: 118, recipe: { iron: 1, oil: 4 }, rate: 0.07 },
 };
 
 /** 공장이 만들 수 있는 모든 것 */
@@ -159,7 +175,7 @@ const BUILDINGS = {
     name: '물류 센터',
     cost: 220,
     on: 'plain',
-    freight: 1.2, // 화물 1/초당 레벨당 운임
+    freight: 3.5, // 화물 1/초당 레벨당 운임
     maxLevel: MAX_LEVEL,
     upgradeCost: 260,
   },
@@ -963,15 +979,16 @@ class Game {
     if (!p || !m) return { ok: false, error: '잘못된 요청입니다.' };
     if (qty < 1 || qty > 500) return { ok: false, error: '수량은 1~500 사이여야 합니다.' };
 
-    const lo = m.base * 0.4;
+    const lo = m.base * (HITECH[mat] ? HITECH_FLOOR : PRICE_FLOOR);
     const hi = m.base * 2.5;
     let price = m.price;
     let total = 0;
 
+    const impact = this.marketImpact(mat);
     if (side === 'buy') {
       for (let i = 0; i < qty; i++) {
         total += price * (1 + MAT_SPREAD);
-        price = Math.min(hi, price * (1 + MAT_IMPACT));
+        price = Math.min(hi, price * (1 + impact));
       }
       total = Math.round(total);
       if (p.cash < total) return { ok: false, error: `현금이 부족합니다. (필요 ${total})` };
@@ -983,7 +1000,7 @@ class Game {
     if (side === 'sell') {
       if ((p.inv[mat] || 0) < qty) return { ok: false, error: '재고가 부족합니다.' };
       for (let i = 0; i < qty; i++) {
-        price = Math.max(lo, price * (1 - MAT_IMPACT));
+        price = Math.max(lo, price * (1 - impact));
         total += price * (1 - MAT_SPREAD);
       }
       total = Math.round(total);
@@ -1326,6 +1343,16 @@ class Game {
     }
   }
 
+  /** 1개 체결마다 시세가 밀리는 비율 (하이테크는 크게) */
+  marketImpact(key) {
+    return HITECH[key] ? HITECH_IMPACT : MAT_IMPACT;
+  }
+
+  /** 시세가 기준가로 돌아오는 속도 (하이테크는 느리게 — 공급 과잉이 오래 간다) */
+  marketRevert(key) {
+    return HITECH[key] ? HITECH_REVERT : MARKET_REVERT;
+  }
+
   /** 지금 살 수 있는 물량 (시장에 남은 것 + 외부 투자자가 내놓을 수 있는 것) */
   availableShares(companyId) {
     const s = this.stocks[companyId];
@@ -1463,9 +1490,10 @@ class Game {
 
     // 4) 기준가는 수요·공급을 따라 흐르고, 시세는 그 기준가로 서서히 회귀한다
     this.updateBaselines(dt);
-    // 거래로 밀린 시세는 기준가로 제법 빠르게 돌아온다 (한 번 튄 값이 오래 가지 않게)
-    for (const m of Object.values(this.market)) {
-      m.price = Math.round((m.price + (m.base - m.price) * 0.06 * dt) * 100) / 100;
+    // 거래로 밀린 시세는 기준가로 돌아온다.
+    // 하이테크는 회복이 느려서, 많이 팔면 값이 눌린 채로 한동안 간다.
+    for (const [key, m] of Object.entries(this.market)) {
+      m.price = Math.round((m.price + (m.base - m.price) * this.marketRevert(key) * dt) * 100) / 100;
     }
     for (const c of this.cities) {
       for (const k of Object.keys(c.demand)) {

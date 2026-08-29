@@ -373,6 +373,60 @@ function run(game, seconds) {
   console.log(`✓ 임대업 (1채 ${fmt(rent1)}/초 → 여러 채 깔리면 ${fmt(g.rentPerSec(t1) / t1.level)}/초)`);
 }
 
+/* ---------------- 하이테크는 많이 팔면 값이 빠르게 무너진다 ---------------- */
+{
+  const g = newGame(200000);
+  const a = g.player('a');
+  a.inv.semi = 5000;
+
+  // 원자재보다 체결 충격이 크다 — 같은 수량을 팔아도 훨씬 많이 밀린다
+  const semi0 = g.market.semi.price;
+  g.trade('a', { mat: 'semi', qty: 20, side: 'sell' });
+  const semiDrop = 1 - g.market.semi.price / semi0;
+
+  const g2 = newGame(200000);
+  g2.player('a').inv.iron = 5000;
+  const iron0 = g2.market.iron.price;
+  g2.trade('a', { mat: 'iron', qty: 20, side: 'sell' });
+  const ironDrop = 1 - g2.market.iron.price / iron0;
+  assert.ok(semiDrop > ironDrop * 3, `하이테크가 훨씬 크게 밀린다 (${fmt(semiDrop * 100)}% vs ${fmt(ironDrop * 100)}%)`);
+
+  // 계속 쏟아부으면 값이 회복되지 못하고 눌린 채로 간다
+  for (let k = 0; k < 10; k++) {
+    g.trade('a', { mat: 'semi', qty: 20, side: 'sell' });
+    run(g, 5);
+  }
+  assert.ok(
+    g.market.semi.price < semi0 * 0.5,
+    `공급 과잉이면 반토막 아래로 떨어진다 (${fmt(g.market.semi.price)} / ${semi0})`
+  );
+
+  // 원자재보다 회복이 느리다
+  const low = g.market.semi.price;
+  run(g, 30);
+  const recovered = (g.market.semi.price - low) / Math.max(0.01, g.market.semi.base - low);
+  assert.ok(recovered < 0.5, '한 번 눌린 하이테크 시세는 천천히 돌아온다');
+
+  // 마진이 도시 제품과 비슷한 수준이어야 한다 (하이테크만 압도적이면 안 된다)
+  const semiInput = Object.entries(HITECH.semi.recipe).reduce(
+    (s, [k, n]) => s + MATERIALS[k].base * n,
+    0
+  );
+  const machineInput = Object.entries(PRODUCTS.machine.recipe).reduce(
+    (s, [k, n]) => s + MATERIALS[k].base * n,
+    0
+  );
+  const semiMarkup = HITECH.semi.base / semiInput;
+  const machineMarkup = PRODUCTS.machine.base / machineInput;
+  assert.ok(
+    semiMarkup < machineMarkup * 1.5,
+    `하이테크 마진율이 도시 제품과 비슷해야 한다 (${fmt(semiMarkup)}배 vs ${fmt(machineMarkup)}배)`
+  );
+  console.log(
+    `✓ 하이테크 시세 붕괴 (20개 매도에 ${fmt(semiDrop * 100)}% 하락, 마진율 ${fmt(semiMarkup)}배)`
+  );
+}
+
 /* ---------------- 운송업 (오가는 화물이 수요) ---------------- */
 {
   const g = newGame(50000);
@@ -472,7 +526,8 @@ function run(game, seconds) {
 
 /* ---------------- 임대 수입도 경영권 몫의 대상이다 ---------------- */
 {
-  const g = newGame(100000);
+  // 주가는 시장 심리에 따라 크게 흔들리므로, 과반을 사고도 남을 만큼 쥐여 준다
+  const g = newGame(500000);
   const a = g.player('a');
   const b = g.player('b');
 
