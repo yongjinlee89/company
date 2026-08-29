@@ -99,6 +99,24 @@ const BLUE_CHIP_MOOD_RANGE = [0.7, 1.3]; // 개별 주식(0.5~1.7)보다 좁은 
 const TAX_MAX = 0.7; // 아무리 벌어도 이 비율은 넘지 않는다
 const TAX_HALF = 80; // 초당 수익이 이만큼일 때 최고세율의 절반
 
+/*
+ * 보유세 — 법인세가 "버는 것" 에 물린다면 이건 "쌓아 둔 것" 에 물린다.
+ * 땅·건물·재고 평가액에 매 초 붙어서, 설비를 깔아 놓고 가만히 있어도 돈이 샌다.
+ * 법인세만으로는 이미 벌어 놓은 자산 더미가 그대로 남아 후반 격차가 굳어지는데,
+ * 보유세가 그 더미 자체를 계속 깎아 준다. (유지비와 달리 재고·땅까지 대상)
+ * 0.03%/초 = 10분에 자산의 약 16%.
+ */
+const PROPERTY_TAX_RATE = 0.0003;
+
+/*
+ * 감가상각 — 설비는 지은 순간부터 값이 떨어진다. 초당 이 비율씩 깎이되
+ * DEPRECIATION_FLOOR 아래로는 안 내려간다 (완전히 0 이 되면 팔 이유가 사라진다).
+ * 0.04%/초 = 10분이면 건물값이 약 24% 빠진다.
+ * 땅값은 안 깎는다 — 닳는 건 건물이지 땅이 아니다.
+ */
+const DEPRECIATION_RATE = 0.0004;
+const DEPRECIATION_FLOOR = 0.35; // 아무리 오래돼도 건축비의 이 비율은 남는다
+
 // 배당은 주가에 비례해 초당 지급된다. 0.002 = 주가의 0.2%/초.
 // 주가가 오를수록 배당도 커지고, 회사 현금에서 빠져나가므로 남에게 지분을
 // 많이 내준 회사는 그만큼 성장이 느려진다. (되사면 그만큼 부담이 사라진다)
@@ -585,6 +603,7 @@ class Game {
     p.cash -= spec.cost;
     tile.b = kind;
     tile.level = 1;
+    tile.builtAt = this.elapsed; // 감가상각 기준 시각
     if (kind === 'factory') {
       tile.mode = 'machine';
       // 가장 이득이 큰 도시로 배송 노선을 자동 지정해 준다 (바로 돌아가도록)
@@ -596,18 +615,36 @@ class Game {
   }
 
   /** 땅과 그 위 건물의 평가액 (순자산 계산과 은행 매각가에 함께 쓴다) */
+  /** 이 건물에 지금까지 들어간 건축비 총액 (신축비 + 증설비 누계) */
+  buildingCost(tile, level) {
+    if (!tile || !tile.b) return 0;
+    const spec = BUILDINGS[tile.b];
+    let v = spec.cost;
+    const lv = level === undefined ? tile.level || 1 : level;
+    for (let i = 1; i < lv; i++) v += spec.upgradeCost * i;
+    return v;
+  }
+
+  /**
+   * 지은 지 오래될수록 건물값이 떨어지는 비율 (1 = 새것).
+   * DEPRECIATION_FLOOR 아래로는 안 내려간다 — 완전히 0 이 되면 팔 이유가 사라진다.
+   */
+  depreciation(tile) {
+    if (!tile || !tile.b) return 1;
+    const age = Math.max(0, this.elapsed - (tile.builtAt || 0));
+    return Math.max(DEPRECIATION_FLOOR, 1 - DEPRECIATION_RATE * age);
+  }
+
+  /**
+   * 땅과 그 위 건물의 평가액 (순자산 계산과 은행 매각가에 함께 쓴다).
+   * 건물은 되팔 때 일부만 돌려받고(RESALE_RATE), 거기서 감가상각까지 먹는다.
+   * 땅값은 안 깎는다 — 닳는 건 건물이지 땅이 아니다.
+   */
   tileValue(idx) {
     const tile = this.tile(idx);
     if (!tile) return 0;
     let v = TILE_TYPES[tile.t].price || 0;
-    if (tile.b) {
-      const spec = BUILDINGS[tile.b];
-      v += spec.cost * RESALE_RATE;
-      // 증설에 들인 돈도 자산으로 쳐 준다
-      for (let lv = 1; lv < (tile.level || 1); lv++) {
-        v += spec.upgradeCost * lv * RESALE_RATE;
-      }
-    }
+    if (tile.b) v += this.buildingCost(tile) * RESALE_RATE * this.depreciation(tile);
     return Math.round(v);
   }
 
@@ -909,6 +946,11 @@ class Game {
     if (p.cash < cost) return { ok: false, error: `현금이 부족합니다. (필요 ${cost})` };
     p.cash -= cost;
     tile.level = (tile.level || 1) + 1;
+    // 증설하면 새 설비가 섞이므로 그만큼 "나이" 를 되돌려 준다.
+    // 새로 들인 돈이 전체에서 차지하는 비중만큼 기준 시각을 지금 쪽으로 당긴다.
+    const oldValue = this.buildingCost(tile, tile.level - 1);
+    const share = cost / Math.max(1, oldValue + cost);
+    tile.builtAt = (tile.builtAt || 0) + (this.elapsed - (tile.builtAt || 0)) * share;
     this.pushLog(`${p.name} 님이 ${spec.name}을(를) ${tile.level}단계로 증설했습니다.`);
     return { ok: true };
   }
@@ -1818,6 +1860,23 @@ class Game {
       owner._incomeAccum -= fee;
     }
 
+    // 4-c) 보유세 — 쌓아 둔 자산(땅·건물·재고)에 매 초 붙는다.
+    //      법인세가 "버는 것" 을 깎는다면 이건 이미 쌓인 더미 자체를 깎아서,
+    //      설비만 잔뜩 깔아 두고 버티는 게 공짜가 되지 않게 한다.
+    for (const p of this.players) {
+      let holdings = 0;
+      for (const [k, n] of Object.entries(p.inv)) {
+        if (n > 0) holdings += this.market[k] ? this.liquidationValue(k, n) : this.itemValue(k) * n;
+      }
+      for (let i = 0; i < this.map.tiles.length; i++) {
+        if (this.map.tiles[i].owner === p.id) holdings += this.tileValue(i);
+      }
+      if (holdings <= 0) continue;
+      const tax = holdings * PROPERTY_TAX_RATE * dt;
+      p.cash -= tax;
+      p._incomeAccum -= tax;
+    }
+
     // 5) 금리 국면이 흐른다 — 대출·채권에 같은 배수로 걸리므로 둘의 상하 관계는 유지된다
     this.rateMult += (1 - this.rateMult) * RATE_THETA * dt + (Math.random() - 0.5) * RATE_SIGMA * Math.sqrt(dt);
     this.rateMult = Math.min(RATE_RANGE[1], Math.max(RATE_RANGE[0], this.rateMult));
@@ -1932,16 +1991,18 @@ class Game {
   }
 
   /**
-   * 최종 순위용 자산 = 현금·채권 − 빚 − 공매도 노출액 + 들고 있는 모든 주식의 시가.
+   * 최종 순위용 자산
+   *   = 현금·채권 − 빚 − 공매도 노출액 + 들고 있는 모든 주식의 시가 + 감가된 설비 가치.
    *
-   * 자기 회사 주식도 예외 없이 "시세 × 보유 수량"으로만 잡는다. 회사 실제 자산
-   * (재고·땅)은 여기 직접 더하지 않는다 — 그건 이미 주가(operatingWorth 기반)에
-   * 녹아들어 있고, 내가 그 지분을 얼마나 들고 있느냐에 비례해서만 내 몫이 된다.
-   * 자사주를 다 팔면 그 회사에서 내 몫은 정확히 0 이다 — 땅·공장을 여전히
-   * 운영하고 있어도 순자산엔 안 잡힌다. 반대로 예전처럼 "회사 가치를 100% 내 것
-   * 으로 깔고 남의 몫만 시세로 뺀다" 는 식이 아니라서, 시세가 아무리 부풀어도
-   * (mood·사건) 마이너스로 떨어질 일도 없다 — 그냥 내가 든 몫만큼만 더한다.
-   * (은행 담보 한도는 이것과 별개로 operatingWorth 를 쓴다 → creditLimit 참고)
+   * 주식은 자기 회사 것까지 예외 없이 "시세 × 보유 수량" 으로만 잡는다.
+   * 여기에 더해 내가 깔아 둔 땅·건물을 감가상각된 값으로 직접 더한다 — 설비가
+   * 주가를 통해서만 반영되면 창업자 몫은 지분율(10%)만큼밖에 안 잡혀서, 실제로
+   * 공장을 굴려 온 사람이 손해를 본다. 오래된 설비일수록 값이 깎이므로(depreciation)
+   * 일찍 지어 방치한 것보다 제때 새로 깐 쪽이 점수에서 유리하다.
+   *
+   * 지분율만큼은 주가와 설비값이 겹쳐 잡히지만(설비 → operatingWorth → 주가),
+   * 창업자 지분이 10% 라 겹치는 폭이 작고, 그 대가로 "내 설비는 내 점수" 라는
+   * 직관을 지킨다. 재고는 시세가 출렁여 점수가 요동치므로 여기 넣지 않는다.
    */
   netWorth(p) {
     let v = p.cash + p.bonds - p.debt;
@@ -1952,6 +2013,9 @@ class Game {
       if (!n) continue;
       const s = this.stocks[cid] || this.blueChips[cid]; // 우량주도 같은 방식으로 잡힌다
       if (s) v += s.price * n;
+    }
+    for (let i = 0; i < this.map.tiles.length; i++) {
+      if (this.map.tiles[i].owner === p.id) v += this.tileValue(i);
     }
     return Math.round(v);
   }

@@ -301,6 +301,121 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   );
 }
 
+/* ---------------- 보유세 ---------------- */
+{
+  const g = newGame(50000, 1200);
+  const a = g.player('a');
+
+  // 아무것도 없으면 안 걷힌다
+  const idle = g.player('b');
+  const idleCash = idle.cash;
+  run(g, 5);
+  assert.ok(Math.abs(idle.cash - idleCash) < 0.01, '가진 게 없으면 보유세도 없다');
+
+  // 땅·건물을 깔면 매 초 빠져나간다 (놀리든 돌리든)
+  const idx = findTile(g, 'iron');
+  g.buyTile('a', idx);
+  g.build('a', idx, 'mine');
+  const before = a.cash;
+  run(g, 10);
+  const paid = before - a.cash;
+  assert.ok(paid > 0, '설비를 깔면 보유세가 나간다');
+
+  // 자산이 많을수록 더 낸다
+  const g2 = newGame(50000, 1200);
+  const big = g2.player('a');
+  for (let n = 0; n < 4; n++) {
+    const i = findTile(g2, 'iron');
+    g2.buyTile('a', i);
+    g2.build('a', i, 'mine');
+  }
+  const before2 = big.cash;
+  run(g2, 10);
+  const paid2 = before2 - big.cash;
+  assert.ok(paid2 > paid, `자산이 많을수록 더 낸다 (${paid.toFixed(1)} → ${paid2.toFixed(1)})`);
+
+  // 재고에도 붙는다
+  const g3 = newGame(50000, 1200);
+  const holder = g3.player('a');
+  holder.inv.iron = 500;
+  const before3 = holder.cash;
+  run(g3, 10);
+  assert.ok(holder.cash < before3, '쌓아 둔 재고에도 보유세가 붙는다');
+  console.log(`✓ 보유세 (광산 1채 10초에 ${paid.toFixed(1)} · 4채면 ${paid2.toFixed(1)})`);
+}
+
+/* ---------------- 설비 감가상각 ---------------- */
+{
+  const g = newGame(50000, 3000);
+  const idx = findTile(g, 'plain');
+  g.buyTile('a', idx);
+  g.build('a', idx, 'factory');
+  const tile = g.map.tiles[idx];
+
+  assert.strictEqual(g.depreciation(tile), 1, '갓 지은 건물은 감가가 없다');
+  const fresh = g.tileValue(idx);
+
+  // 시간이 지날수록 값이 떨어진다
+  let prev = fresh;
+  for (const secs of [300, 600, 1200]) {
+    g.elapsed = secs;
+    const now = g.tileValue(idx);
+    assert.ok(now < prev, `${secs}초 시점엔 더 떨어져 있다 (${prev} → ${now})`);
+    prev = now;
+  }
+
+  // 하한 아래로는 안 내려간다 — 완전히 0 이 되면 팔 이유가 사라진다
+  g.elapsed = 100000;
+  assert.ok(g.depreciation(tile) >= 0.35 - 1e-9, '감가에는 하한이 있다');
+  assert.ok(g.tileValue(idx) > 0, '아무리 오래돼도 값이 남는다');
+
+  // 땅값은 안 깎인다 — 닳는 건 건물이지 땅이 아니다
+  const bare = findTile(g, 'plain');
+  g.buyTile('a', bare);
+  const bareNew = g.tileValue(bare);
+  g.elapsed = 200000;
+  assert.strictEqual(g.tileValue(bare), bareNew, '빈 땅은 감가되지 않는다');
+
+  // 증설하면 새 설비가 섞여 나이가 되돌아간다
+  const g2 = newGame(50000, 3000);
+  const i2 = findTile(g2, 'plain');
+  g2.buyTile('a', i2);
+  g2.build('a', i2, 'factory');
+  g2.elapsed = 900;
+  const aged = g2.depreciation(g2.map.tiles[i2]);
+  g2.upgradeBuilding('a', i2);
+  assert.ok(g2.depreciation(g2.map.tiles[i2]) > aged, '증설하면 감가가 일부 회복된다');
+  console.log(`✓ 설비 감가상각 (신축 ${fresh} → 20분 후 ${prev}, 하한 35%)`);
+}
+
+/* ---------------- 감가된 설비가 최종 점수에 들어간다 ---------------- */
+{
+  const g = newGame(50000, 3000);
+  const a = g.player('a');
+
+  const before = g.netWorth(a);
+  const idx = findTile(g, 'plain');
+  g.buyTile('a', idx);
+  g.build('a', idx, 'factory');
+  // 현금이 설비로 바뀌었을 뿐이므로 점수가 크게 줄면 안 된다
+  assert.ok(g.netWorth(a) > before * 0.95, '설비 투자가 점수를 깎아먹지 않는다');
+  assert.ok(g.netWorth(a) >= a.cash, '설비 가치가 점수에 잡힌다');
+
+  // 자사주를 다 팔아도 내가 깐 설비는 내 점수로 남는다
+  g.stockTrade('a', { company: 'a', qty: a.shares.a, side: 'sell' });
+  assert.ok(!a.shares.a, '자사주가 없다');
+  assert.ok(g.netWorth(a) > a.cash, '자사주가 없어도 설비 가치는 점수에 남는다');
+
+  // 시간이 지나 감가되면 점수도 그만큼 준다
+  const worthNow = g.netWorth(a);
+  const cashNow = a.cash;
+  g.elapsed = 1800;
+  const aged = g.netWorth(a);
+  assert.ok(aged < worthNow, `설비가 낡으면 점수도 준다 (${worthNow} → ${aged})`);
+  assert.strictEqual(aged - Math.round(cashNow), g.tileValue(idx), '줄어든 만큼이 감가된 설비 가치와 맞는다');
+  console.log(`✓ 감가된 설비가 최종 점수에 반영 (${worthNow} → 30분 후 ${aged})`);
+}
+
 /* ---------------- 한국중공업 주가가 기계 판매가를 끌어올린다 ---------------- */
 {
   const g = newGame(1000, 1200);
@@ -446,7 +561,9 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   const cash = a.cash;
   run(g, 5);
   assert.ok(Math.abs(a.inv.iron - settled) < 0.01, '목표에 도달하면 더 사지 않는다');
-  assert.strictEqual(a.cash, cash, '돈도 더 쓰지 않는다');
+  // 자동 매수로는 한 푼도 안 나간다. (재고에 붙는 보유세는 계속 빠지므로 그만큼만 허용)
+  const propertyTax = g.liquidationValue('iron', a.inv.iron) * 0.0003 * 5;
+  assert.ok(a.cash >= cash - propertyTax * 1.5, '목표에 도달하면 매수로는 돈을 더 쓰지 않는다');
 
   // 공장이 재료를 쓰면 다시 채워 준다 — 이게 이 기능의 목적
   const idx = findTile(g, 'plain');
