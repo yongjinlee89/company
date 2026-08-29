@@ -1704,17 +1704,26 @@ class Game {
    * 자기 주식을 그냥 더하면 회사 자산을 두 번 세는 셈이라 점수가 부풀어 오른다.
    * 이렇게 두면 남이 내 회사를 사들일수록 내 몫이 줄고 그만큼 상대 몫이 늘어난다.
    * (외부 투자자 보유분은 사람 사이의 계산이 아니므로 건드리지 않는다)
+   *
+   * 남이 가져간 몫은 "내 회사 가치"를 넘을 수 없다 — 시세는 mood/사건으로 실제
+   * 가치보다 부풀 수 있는데(최대 mood 1.7 배 + 사건 배수), 그대로 빼면 남이 지분
+   * 대부분을 들고 있을 때 시세가 살짝만 뛰어도 내가 회사를 통째로 운영하고 있는데도
+   * 순자산이 마이너스로 떨어지는 버그가 있었다. 자사주를 다 팔았을 때 특히 잘 드러남.
+   * 남에게 넘어간 몫은 최대 0(다 넘어감)까지만 깎고, 빚으로 넘어가진 않게 한다.
    */
   netWorth(p) {
-    let v = this.operatingWorth(p);
+    const worth = this.operatingWorth(p);
+    let externalClaim = 0; // 남이 내 회사에서 시세로 가져가는 몫
+    let holdings = 0; // 내가 남의 회사에서 시세로 들고 있는 몫
     for (const other of this.players) {
       if (other.id === p.id) continue;
       const mine = other.shares[p.id] || 0;
-      if (mine) v -= this.stocks[p.id].price * mine;
+      if (mine) externalClaim += this.stocks[p.id].price * mine;
       const theirs = p.shares[other.id] || 0;
-      if (theirs) v += this.stocks[other.id].price * theirs;
+      if (theirs) holdings += this.stocks[other.id].price * theirs;
     }
-    return Math.round(v);
+    const ownShare = Math.max(0, worth - externalClaim);
+    return Math.round(ownShare + holdings);
   }
 
   /** 소수점이 지저분하지 않게 다듬어 보낸다 */

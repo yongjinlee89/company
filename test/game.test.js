@@ -811,6 +811,30 @@ function run(game, seconds) {
   console.log('✓ 주가 기준 = 본업 가치 (주식 상호매수로 부풀지 않음)');
 }
 
+/* ---------------- 자사주를 다 팔아도 순자산이 마이너스로 떨어지지 않는다 ---------------- */
+{
+  const g = newGame(100000);
+  const a = g.player('a');
+  const b = g.player('b');
+
+  // 창업자가 자기 회사 지분을 전부 판다
+  assert.ok(g.stockTrade('a', { company: 'a', qty: 50, side: 'sell' }).ok);
+  assert.strictEqual(a.shares.a || 0, 0, '자사주가 하나도 안 남는다');
+
+  // 남이 그 회사 지분 대부분(96%)을 들고 있다고 가정한다
+  b.shares.a = 480;
+
+  const fair = g.operatingWorth(a) / 500;
+  // mood 만으로도 최대 1.7배, 사건이 겹치면 훨씬 더 튈 수 있다 — 시세가 부풀어도
+  assert.ok(fair > 0, '테스트 전제: 회사에 실제 가치가 있다');
+  for (const mult of [1, 1.5, 2, 3]) {
+    g.stocks.a.price = fair * mult;
+    const worth = g.netWorth(a);
+    assert.ok(worth >= 0, `시세가 제값의 ${mult}배여도 순자산이 마이너스가 되면 안 된다 (실제 ${worth})`);
+  }
+  console.log('✓ 자사주 전량 매도 후 순자산 하한 (남이 다 들고 시세가 부풀어도 0 아래로 안 내려간다)');
+}
+
 /* ---------------- 재고는 액면가가 아니라 팔았을 때 값으로 잡힌다 ---------------- */
 {
   const QTY = 200;
