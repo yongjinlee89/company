@@ -811,6 +811,42 @@ function run(game, seconds) {
   console.log('✓ 주가 기준 = 본업 가치 (주식 상호매수로 부풀지 않음)');
 }
 
+/* ---------------- 재고는 액면가가 아니라 팔았을 때 값으로 잡힌다 ---------------- */
+{
+  const QTY = 200;
+  const g = newGame(10000);
+  const a = g.player('a');
+
+  const naiveIron = g.market.iron.price * QTY;
+  const realIron = g.liquidationValue('iron', QTY);
+  assert.ok(realIron < naiveIron, '많이 쌓아 둔 재고는 액면가보다 싸게 매겨진다');
+
+  a.inv.iron = QTY;
+  assert.ok(
+    Math.abs(g.operatingWorth(a) - (10000 + realIron)) < 0.5,
+    '순자산 계산도 liquidationValue 를 그대로 쓴다'
+  );
+
+  // 실제로 팔아 보면 예측과 비슷해야 한다 (진짜 회수 가능액이라는 검증)
+  const sold = g.trade('a', { mat: 'iron', qty: QTY, side: 'sell' });
+  assert.ok(sold.ok);
+  assert.ok(
+    Math.abs(sold.total - realIron) < realIron * 0.02,
+    `예측(${realIron.toFixed(0)})과 실제 체결(${sold.total})이 비슷하다`
+  );
+
+  // 하이테크는 체결 충격이 훨씬 커서(HITECH_IMPACT), 같은 수량이면 할인폭도 더 크다
+  const naiveSemi = g.market.semi.price * QTY;
+  const realSemi = g.liquidationValue('semi', QTY);
+  const matDiscount = 1 - realIron / naiveIron;
+  const hitechDiscount = 1 - realSemi / naiveSemi;
+  assert.ok(hitechDiscount > matDiscount, '하이테크가 원자재보다 재고 할인폭이 크다');
+  console.log(
+    `✓ 재고는 팔았을 때 값으로 평가 (${QTY}개 기준 원자재 ${(matDiscount * 100).toFixed(1)}% 할인, ` +
+      `반도체 ${(hitechDiscount * 100).toFixed(1)}% 할인)`
+  );
+}
+
 /* ---------------- 수요는 시간이 지나면 회복된다 ---------------- */
 {
   const g = newGame();

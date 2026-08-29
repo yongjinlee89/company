@@ -269,7 +269,10 @@ function renderEvent() {
   banner.classList.remove('hidden');
   const left = Math.max(0, Math.round(e.until - S.game.elapsed));
   banner.textContent = `${e.icon} ${e.text} (${left}초 남음)`;
-  banner.classList.toggle('bad', e.kind === 'mat-up' || e.kind === 'city-slump' || e.kind === 'market-crash');
+  banner.classList.toggle(
+    'bad',
+    e.kind === 'mat-up' || e.kind === 'city-slump' || e.kind === 'market-crash' || e.kind === 'company-slump'
+  );
 }
 
 /**

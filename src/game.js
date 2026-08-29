@@ -223,6 +223,12 @@ const CITY_NAMES = ['서울', '부산', '광주', '대전'];
  * 흔든다 — 가만히 들고만 있어도 안전하지 않게 만들어서 계속 주식만 쥐고
  * 있는 게 최선이 되지 않게 한다. 다른 사건과 마찬가지로 예고 없이 터진다.
  * 하락 쪽을 상승 쪽보다 크게 잡아서, 버티는 보상보다 흔들리는 리스크가 크게 한다.
+ *
+ * company-slump/company-boom 은 회사 하나만 콕 집어 흔든다. 시장 전체 위기는
+ * 드물어서 공매도로 먹고살기엔 기회가 너무 적다 — 본업 가치(fair)가 꾸준히
+ * 우상향하는 판이라 mood 의 잔물결만으로는 지속적인 하락 구간이 잘 안 나온다.
+ * 회사 단위 사건을 시장 전체보다 자주 터뜨려서, 특정 종목을 노리고 공매도할
+ * 진짜 기회를 규칙적으로 만들어 준다. 여기서도 하락(slump) 비중을 더 크게 둔다.
  */
 const EVENT_KINDS = [
   { kind: 'mat-up', weight: 3 },
@@ -231,12 +237,16 @@ const EVENT_KINDS = [
   { kind: 'city-slump', weight: 2 },
   { kind: 'market-crash', weight: 2 },
   { kind: 'market-rally', weight: 2 },
+  { kind: 'company-slump', weight: 3 },
+  { kind: 'company-boom', weight: 2 },
 ];
 const EVENT_FIRST = 35; // 첫 사건까지 (초)
 const EVENT_GAP = [40, 75]; // 사건 사이 간격
 const EVENT_LEN = [25, 45]; // 사건 지속 시간
 const MARKET_CRASH_MULT = [0.45, 0.6]; // 금융위기 동안 전체 주가 목표에 곱하는 배수
 const MARKET_RALLY_MULT = [1.15, 1.3]; // 랠리 동안 전체 주가 목표에 곱하는 배수
+const COMPANY_SLUMP_MULT = [0.55, 0.75]; // 실적 부진 동안 그 회사 주가 목표에 곱하는 배수
+const COMPANY_BOOM_MULT = [1.15, 1.35]; // 실적 호조 동안 그 회사 주가 목표에 곱하는 배수
 
 const PLAYER_COLORS = ['#e5484d', '#3b82f6', '#22a06b', '#f59e0b', '#8b5cf6', '#0ea5b7'];
 
@@ -412,6 +422,7 @@ class Game {
         unissued: TOTAL_SHARES - FOUNDER_SHARES - INITIAL_FLOAT, // 아직 상장 전
         npc: 0, // 외부 투자자가 들고 있는 물량 (사람도 이걸 사 올 수 있다)
         mood: 1, // 시장 심리
+        eventMult: 1, // company-slump/company-boom 이 지속되는 동안만 1이 아니다
         turnover: 0, // 누적 거래량
         volume: 0, // 최근 1초 거래량 (화면 표시용)
         _pending: 0, // 상장 대기 소수점 누적
@@ -1253,6 +1264,22 @@ class Game {
           ? `금융위기 — 전 종목 주가가 일제히 ${Math.round(mult * 100)}% 수준으로 급락합니다`
           : `증시 랠리 — 전 종목 주가가 일제히 ${Math.round(mult * 100)}% 수준으로 치솟습니다`,
       };
+    } else if (pick.kind === 'company-slump' || pick.kind === 'company-boom') {
+      const target = this.players[randInt(this.players.length)];
+      const boom = pick.kind === 'company-boom';
+      const range = boom ? COMPANY_BOOM_MULT : COMPANY_SLUMP_MULT;
+      const mult = Math.round((range[0] + Math.random() * (range[1] - range[0])) * 100) / 100;
+      this.stocks[target.id].eventMult = mult;
+      this.event = {
+        kind: pick.kind,
+        target: target.id,
+        mult,
+        until,
+        icon: boom ? '🔺' : '🔻',
+        text: boom
+          ? `${target.name} 실적 호조 — 주가가 ${Math.round(mult * 100)}% 수준으로 뜁니다`
+          : `${target.name} 실적 부진 — 주가가 ${Math.round(mult * 100)}% 수준으로 밀립니다`,
+      };
     } else {
       const ci = randInt(this.cities.length);
       const boom = pick.kind === 'city-boom';
@@ -1282,6 +1309,8 @@ class Game {
       m.base = m.baseline;
     } else if (e.kind === 'market-crash' || e.kind === 'market-rally') {
       this.marketMult = 1;
+    } else if (e.kind === 'company-slump' || e.kind === 'company-boom') {
+      if (this.stocks[e.target]) this.stocks[e.target].eventMult = 1;
     } else {
       this.cities[e.target].boost = 1;
     }
@@ -1310,8 +1339,9 @@ class Game {
       // 반대로 매출이 꺾이면 자산이 그대로여도 주가가 내려간다.
       const worth = this.operatingWorth(p) + p.incomePerSec * INCOME_MULTIPLE;
       const fair = Math.max(0.05, worth / TOTAL_SHARES);
-      // marketMult 는 금융위기/랠리 동안만 1이 아니며, 회사 개별 mood 와 별도로 전체를 흔든다
-      const target = fair * s.mood * this.marketMult;
+      // marketMult 는 전체 시장(금융위기/랠리), eventMult 는 이 회사만(실적 부진/호조) —
+      // 회사 개별 mood 와 별도로 얹혀서 진짜 하락·상승 구간을 만든다
+      const target = fair * s.mood * s.eventMult * this.marketMult;
       const gap = (target - s.price) / s.price;
 
       /*
@@ -1592,6 +1622,22 @@ class Game {
   }
 
   /**
+   * 재고 qty개를 지금 시장에 던지면 실제로 얼마를 받을지 — trade() 매도와 같은
+   * 체결 공식(등비수열로 닫힌 식을 쓴다)이지만 실제로 팔지는 않는 드라이런이다.
+   *
+   * 순자산에 재고를 마지막 체결가 × 수량으로 그대로 넣으면 안 된다. 팔수록 시세가
+   * 밀리므로(marketImpact), 많이 쌓아 둔 재고일수록 실제 회수 가능액보다 부풀어
+   * 보인다 — 특히 하이테크는 충격이 커서(HITECH_IMPACT) 차이가 크다.
+   */
+  liquidationValue(key, qty) {
+    const m = this.market[key];
+    if (!m || !(qty > 0)) return 0;
+    const r = 1 - this.marketImpact(key);
+    const sum = (m.price * r * (1 - Math.pow(r, qty))) / (1 - r);
+    return sum * (1 - MAT_SPREAD);
+  }
+
+  /**
    * 주가를 매길 때 쓰는 "본업 가치" — 현금·재고·땅·건물에서 빚을 뺀 값.
    *
    * 남의 주식 보유분은 일부러 뺀다. 넣으면 A 가 B 주식을 사는 순간 A 의 순자산이
@@ -1600,7 +1646,9 @@ class Game {
    */
   operatingWorth(p) {
     let v = p.cash + p.bonds;
-    for (const [k, n] of Object.entries(p.inv)) v += this.itemValue(k) * n;
+    for (const [k, n] of Object.entries(p.inv)) {
+      v += this.market[k] ? this.liquidationValue(k, n) : this.itemValue(k) * n;
+    }
     for (let i = 0; i < this.map.tiles.length; i++) {
       if (this.map.tiles[i].owner === p.id) v += this.tileValue(i);
     }
@@ -1741,6 +1789,8 @@ module.exports = {
   AUTO_BUY_RESERVE,
   MARKET_CRASH_MULT,
   MARKET_RALLY_MULT,
+  COMPANY_SLUMP_MULT,
+  COMPANY_BOOM_MULT,
   transportQuote,
   chebyshev,
   generateMap,

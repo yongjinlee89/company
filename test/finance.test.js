@@ -7,7 +7,7 @@ const {
   Game, TILE_TYPES, BUILDINGS, MAX_SHORT, LOAN_INTEREST, LOAN_MIN_LIMIT, RESALE_RATE,
   TAKEOVER_SHARES, AUTO_BUY_RATE, AUTO_BUY_RESERVE,
   TOTAL_SHARES, FOUNDER_SHARES, INITIAL_FLOAT,
-  BOND_INTEREST, MARKET_CRASH_MULT, MARKET_RALLY_MULT,
+  BOND_INTEREST, MARKET_CRASH_MULT, MARKET_RALLY_MULT, COMPANY_SLUMP_MULT, COMPANY_BOOM_MULT,
 } = require('../src/game');
 
 function newGame(startCash = 5000, duration = 600) {
@@ -393,6 +393,8 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
     assert.ok(fired.kind === 'mat-up' ? m.price > before : m.price < before, '시세가 사건을 따라 움직인다');
   } else if (fired.kind === 'market-crash' || fired.kind === 'market-rally') {
     assert.notStrictEqual(g.marketMult, 1, '사건 중에는 전체 주가 배수가 바뀐다');
+  } else if (fired.kind === 'company-slump' || fired.kind === 'company-boom') {
+    assert.notStrictEqual(g.stocks[fired.target].eventMult, 1, '사건 중에는 그 회사 주가 배수가 바뀐다');
   } else {
     assert.notStrictEqual(g.cities[fired.target].boost, 1, '사건 중에는 도시 가격 배수가 바뀐다');
   }
@@ -406,6 +408,7 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   }
   for (const c of g.cities) assert.strictEqual(c.boost, 1, '도시 배수도 원래대로');
   assert.strictEqual(g.marketMult, 1, '전체 주가 배수도 원래대로');
+  for (const s of Object.values(g.stocks)) assert.strictEqual(s.eventMult, 1, '회사별 주가 배수도 원래대로');
   console.log(`✓ 사건 (${fired.icon} ${fired.text})`);
 }
 
@@ -442,6 +445,46 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
     '하락 쪽 최대 낙폭이 상승 쪽 최대 상승폭보다 커야 한다'
   );
   console.log(`✓ 금융위기/랠리 (위기 시 전 종목 동시에 ${Math.round((1 - fired.mult) * 100)}% 급락)`);
+}
+
+/* ---------------- 실적 부진 / 호조 (회사 하나만 겨냥한 사건) ---------------- */
+{
+  const g = newGame(5000, 1200);
+  for (const s of Object.values(g.stocks)) s.mood = 1; // 개별 편차를 없애 비교를 쉽게 한다
+
+  let fired = null;
+  for (let i = 0; i < 300 && !fired; i++) {
+    g.startEvent();
+    if (g.event.kind === 'company-slump') fired = g.event;
+    else g.endEvent();
+  }
+  assert.ok(fired, '실적 부진 사건을 뽑을 수 있어야 한다');
+  assert.ok(g.stocks[fired.target], '특정 회사를 겨냥한다');
+  assert.ok(
+    fired.mult >= COMPANY_SLUMP_MULT[0] && fired.mult <= COMPANY_SLUMP_MULT[1],
+    '부진 배수가 정해진 범위 안'
+  );
+  assert.strictEqual(g.stocks[fired.target].eventMult, fired.mult, '그 회사에만 즉시 반영된다');
+
+  // 겨냥한 회사만 눌리고, 나머지는 이 사건과 무관하다
+  const before = {};
+  for (const [id, s] of Object.entries(g.stocks)) before[id] = s.price;
+  run(g, 15);
+  assert.ok(g.stocks[fired.target].price < before[fired.target], '겨냥한 회사 주가는 떨어진다');
+  for (const [id, s] of Object.entries(g.stocks)) {
+    if (id === fired.target) continue;
+    assert.strictEqual(s.eventMult, 1, `${id} 는 이 사건의 영향을 받지 않는다`);
+  }
+
+  g.endEvent();
+  assert.strictEqual(g.stocks[fired.target].eventMult, 1, '사건이 끝나면 배수가 원래대로 돌아온다');
+
+  // 호조(상승)보다 부진(하락) 쪽 폭이 커야, 공매도할 진짜 기회가 된다
+  assert.ok(
+    1 - COMPANY_SLUMP_MULT[0] > COMPANY_BOOM_MULT[1] - 1,
+    '부진 쪽 최대 낙폭이 호조 쪽 최대 상승폭보다 커야 한다'
+  );
+  console.log(`✓ 실적 부진/호조 (겨냥한 회사만 ${Math.round((1 - fired.mult) * 100)}% 하락, 나머지는 무관)`);
 }
 
 console.log('\n금융/부동산 테스트 전부 통과!');
