@@ -28,7 +28,15 @@ const FOUNDER_SHARES = 50; // 창업자 초기 지분 (10%)
 const INITIAL_FLOAT = 50; // 개장 시 시장에 나와 있는 물량
 const LISTING_PORTION = 0.7; // 게임 시간의 이 비율에 걸쳐 나머지가 상장된다
 // 외인·기관이 초당 굴리는 물량. 사람이 적어도 호가가 계속 움직이게 한다.
-const NPC_ACTIVITY = 3;
+const NPC_ACTIVITY = 5;
+/*
+ * 외인·기관도 공매도를 친다. 위의 float/npc 물량 회전만으로는 "가진 걸 되판다"
+ * 수준이라 하락 압력에 한계가 있다 — 진짜 공매도(빌려서 판다)를 별도 채널로 둬서,
+ * 고평가일수록 눌리는 힘을 real 물량 보존과 무관하게 추가한다.
+ * npcShort 는 어느 플레이어 소유도 아닌 합성 포지션이라 현금·증거금이 없다.
+ */
+const NPC_SHORT_ACTIVITY = 3; // 공매도 채널이 초당 굴리는 물량
+const NPC_MAX_SHORT = 250; // 회사당 외인·기관 공매도 잔고 한도
 const TAKEOVER_SHARES = 251; // 과반 — 이만큼 모으면 경영권 인수
 // 1주 체결마다 움직이는 주가 비율. 지분을 크게 모을수록 평단가가 확 올라가서,
 // 남의 회사를 싼값에 쓸어 담기 어렵게 만든다. (100주면 약 49%)
@@ -425,8 +433,10 @@ class Game {
         eventMult: 1, // company-slump/company-boom 이 지속되는 동안만 1이 아니다
         turnover: 0, // 누적 거래량
         volume: 0, // 최근 1초 거래량 (화면 표시용)
+        npcShort: 0, // 외인·기관의 합성 공매도 잔고 (실제 물량과 무관, 현금·증거금 없음)
         _pending: 0, // 상장 대기 소수점 누적
         _lots: 0, // 외인·기관 주문 소수점 누적
+        _shortLots: 0, // 외인·기관 공매도 주문 소수점 누적
       };
     }
 
@@ -1374,6 +1384,35 @@ class Game {
         }
       }
 
+      /*
+       * 외인·기관 공매도 — 위의 float/npc 회전과는 별개 채널이다. 그건 "가진 걸
+       * 되파는" 수준이라 하락 압력에 한계가 있는데, 실제로 있는 물량을 빌려서
+       * 파는 채널을 하나 더 두면 고평가일수록 짓누르는 힘이 real 물량과 무관하게
+       * 생긴다. 되사서 덮는 쪽도 마찬가지로 가격을 밀어 올린다.
+       */
+      s._shortLots += NPC_SHORT_ACTIVITY * dt * (0.4 + Math.random() * 1.2);
+      const shortLots = Math.floor(s._shortLots);
+      if (shortLots > 0) {
+        s._shortLots -= shortLots;
+        // 고평가일수록(gap 이 음수) 새로 공매도를 걸 확률이 높고, 저평가면 덮는 쪽으로 기운다
+        const shortBias = 0.5 + Math.max(-0.4, Math.min(0.4, -gap * 2));
+        if (Math.random() < shortBias && s.npcShort < NPC_MAX_SHORT) {
+          const n = Math.min(shortLots, NPC_MAX_SHORT - s.npcShort);
+          if (n > 0) {
+            s.npcShort += n;
+            s.price *= Math.pow(1 - STOCK_IMPACT, n);
+            s.turnover += n;
+          }
+        } else if (s.npcShort > 0) {
+          const n = Math.min(shortLots, s.npcShort);
+          if (n > 0) {
+            s.npcShort -= n;
+            s.price *= Math.pow(1 + STOCK_IMPACT, n);
+            s.turnover += n;
+          }
+        }
+      }
+
       // 거래가 없어도 적정가를 향해 완만히 돌아간다
       s.price = Math.round(Math.max(0.05, s.price + (target - s.price) * 0.08 * dt) * 100) / 100;
     }
@@ -1784,6 +1823,7 @@ module.exports = {
   RESEARCH,
   RESEARCH_MAX,
   MAX_SHORT,
+  NPC_MAX_SHORT,
   RESALE_RATE,
   AUTO_BUY_RATE,
   AUTO_BUY_RESERVE,

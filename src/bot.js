@@ -21,6 +21,7 @@ const {
   TOTAL_SHARES,
   TAKEOVER_SHARES,
   MAX_SHORT,
+  INCOME_MULTIPLE,
   chebyshev,
 } = require('./game');
 
@@ -277,6 +278,26 @@ function buyInputs(game, me) {
 }
 
 /**
+ * 회사의 "제값" — 시장이 실제로 주가를 매길 때 쓰는 기준(본업 가치 + 수익력)과
+ * 똑같은 공식이어야 한다. netWorth 는 남의 지분 보유분까지 섞인 순위용 값이라
+ * 이 용도로 쓰면 수익력이 큰 회사를 전부 "고평가"로 잘못 읽어 공매도가
+ * 걷잡을 수 없이 늘어난다.
+ */
+function fairPrice(game, p) {
+  return Math.max(0.05, (game.operatingWorth(p) + p.incomePerSec * INCOME_MULTIPLE) / TOTAL_SHARES);
+}
+
+/** 공매도 포지션 전체를 지금 시세로 평가한 총 노출액 */
+function totalShortExposure(game, me) {
+  let v = 0;
+  for (const [cid, pos] of Object.entries(me.shorts || {})) {
+    const s = game.stocks[cid];
+    if (s) v += s.price * pos.shares;
+  }
+  return v;
+}
+
+/**
  * 주식 — 경영권 방어가 최우선, 그다음은 공매도 청산/차익 실현, 그다음은
  * 심하게 고평가된 회사를 공매도로 노리는 것(실적 부진 사건 등을 노린다),
  * 마지막이 저평가된 회사를 사 모으는 것. 사람이 주식을 아예 안 만져도
@@ -304,7 +325,7 @@ function playStocks(game, me) {
     const target = game.player(cid);
     const s = game.stocks[cid];
     if (!target || !s) continue;
-    const fair = game.netWorth(target) / TOTAL_SHARES;
+    const fair = fairPrice(game, target);
     if (s.price <= fair * 1.05) {
       game.coverShort(me.id, cid, pos.shares);
       return;
@@ -317,7 +338,7 @@ function playStocks(game, me) {
     const target = game.player(cid);
     const s = game.stocks[cid];
     if (!target || !s) continue;
-    const fair = game.netWorth(target) / TOTAL_SHARES;
+    const fair = fairPrice(game, target);
     // 경영권을 쥐고 있으면 팔지 않는다 (그 자체로 돈이 들어온다)
     if (game.controllerOf(cid) && game.controllerOf(cid).id === me.id) continue;
     if (s.price > fair * 1.25) {
@@ -327,8 +348,10 @@ function playStocks(game, me) {
   }
 
   // 심하게 고평가됐는데 들고 있는 게 없으면 공매도로 노린다
-  // (실적 부진·금융위기 사건이 오면 그 낙폭을 그대로 이익으로 챙긴다)
-  if (me.cash > 400) {
+  // (실적 부진·금융위기 사건이 오면 그 낙폭을 그대로 이익으로 챙긴다).
+  // 총 노출액은 본업 가치의 60% 로 묶어 둔다 — 안 그러면 다들 서로를 한도까지
+  // 공매도해 버려서, 그중 하나만 값이 뛰어도 회사가 통째로 휘청인다.
+  if (me.cash > 400 && totalShortExposure(game, me) < game.operatingWorth(me) * 0.6) {
     let worst = null;
     for (const p of game.players) {
       if (p.id === me.id) continue;
@@ -336,8 +359,8 @@ function playStocks(game, me) {
       const held = game.shortShares(me, p.id);
       if (held >= MAX_SHORT) continue;
       const s = game.stocks[p.id];
-      const fair = game.netWorth(p) / TOTAL_SHARES;
-      const overvalue = s.price / Math.max(0.05, fair); // 1보다 크면 고평가
+      const fair = fairPrice(game, p);
+      const overvalue = s.price / fair; // 1보다 크면 고평가
       if (overvalue > 1.3 && (!worst || overvalue > worst.overvalue)) worst = { id: p.id, overvalue, held };
     }
     if (worst) {
@@ -355,7 +378,7 @@ function playStocks(game, me) {
     const avail2 = game.availableShares(p.id);
     if (avail2 < 1) continue;
     const s = game.stocks[p.id];
-    const fair = game.netWorth(p) / TOTAL_SHARES;
+    const fair = fairPrice(game, p);
     const value = fair / s.price; // 1보다 크면 저평가
     if (value > 1.02 && (!best || value > best.value)) best = { id: p.id, value, s, avail: avail2 };
   }
