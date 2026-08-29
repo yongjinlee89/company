@@ -811,28 +811,32 @@ function run(game, seconds) {
   console.log('✓ 주가 기준 = 본업 가치 (주식 상호매수로 부풀지 않음)');
 }
 
-/* ---------------- 자사주를 다 팔아도 순자산이 마이너스로 떨어지지 않는다 ---------------- */
+/* ---------------- 순자산 = 현금·채권 − 빚 − 공매도 + 보유 주식 시가 (자사주도 예외 없음) ---------------- */
 {
-  const g = newGame(100000);
+  const g = newGame(10000);
   const a = g.player('a');
-  const b = g.player('b');
 
-  // 창업자가 자기 회사 지분을 전부 판다
+  // 창업자가 자기 회사 지분을 전부 판다 — 그 회사에서 내 몫은 정확히 0이 된다
   assert.ok(g.stockTrade('a', { company: 'a', qty: 50, side: 'sell' }).ok);
   assert.strictEqual(a.shares.a || 0, 0, '자사주가 하나도 안 남는다');
+  assert.strictEqual(
+    g.netWorth(a),
+    Math.round(a.cash + a.bonds - a.debt),
+    '자사주가 없으면 그 회사 몫은 순자산에 안 잡힌다'
+  );
 
-  // 남이 그 회사 지분 대부분(96%)을 들고 있다고 가정한다
-  b.shares.a = 480;
+  // 시세가 아무리 뛰어도(mood·사건) 안 들고 있는 자사주는 내 순자산과 무관하다
+  const worthNow = g.netWorth(a);
+  g.stocks.a.price *= 5;
+  assert.strictEqual(g.netWorth(a), worthNow, '안 들고 있는 자사주는 시세가 뛰어도 순자산에 영향이 없다');
 
-  const fair = g.operatingWorth(a) / 500;
-  // mood 만으로도 최대 1.7배, 사건이 겹치면 훨씬 더 튈 수 있다 — 시세가 부풀어도
-  assert.ok(fair > 0, '테스트 전제: 회사에 실제 가치가 있다');
-  for (const mult of [1, 1.5, 2, 3]) {
-    g.stocks.a.price = fair * mult;
-    const worth = g.netWorth(a);
-    assert.ok(worth >= 0, `시세가 제값의 ${mult}배여도 순자산이 마이너스가 되면 안 된다 (실제 ${worth})`);
-  }
-  console.log('✓ 자사주 전량 매도 후 순자산 하한 (남이 다 들고 시세가 부풀어도 0 아래로 안 내려간다)');
+  // 남의 회사 주식은 자사주와 똑같이 시세×수량으로 그대로 잡힌다
+  assert.ok(g.stockTrade('a', { company: 'b', qty: 10, side: 'buy' }).ok);
+  const held = a.shares.b;
+  const fromB = g.stocks.b.price * held;
+  const cashOnly = a.cash + a.bonds - a.debt;
+  assert.ok(Math.abs(g.netWorth(a) - (cashOnly + fromB)) < 1, '보유 주식 시가가 그대로 더해진다');
+  console.log('✓ 순자산 = 현금·채권-빚-공매도 + 보유 주식 시가 (자사주도 예외 없이 시세×수량)');
 }
 
 /* ---------------- 재고는 액면가가 아니라 팔았을 때 값으로 잡힌다 ---------------- */
