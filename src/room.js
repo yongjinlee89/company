@@ -10,7 +10,7 @@ const BOT_NAMES = ['알파', '베타', '감마', '델타', '엡실론'];
 
 const TICK_MS = 250; // 시뮬레이션 간격
 const BROADCAST_EVERY = 2; // 몇 틱마다 화면을 갱신할지 (250ms × 2 = 0.5초)
-const BOT_THINK_MS = 2500; // 컴퓨터가 판단하는 주기
+const BOT_THINK_MS = 1500; // 컴퓨터가 판단하는 주기 — 짧을수록 기회·위협에 더 빨리 반응한다
 
 const DEFAULT_SETTINGS = {
   startCash: 1000, // 시작 자금

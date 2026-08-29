@@ -13,7 +13,7 @@ function newGame(startCash = 1000, duration = 600, n = 2) {
 }
 
 /**
- * 실제 방과 같은 리듬으로 돌린다: 250ms 마다 tick, 2.5초마다 봇 판단.
+ * 실제 방과 같은 리듬으로 돌린다: 250ms 마다 tick, 1.5초마다 봇 판단.
  * @param {string[]} botIds 스스로 판단하는 회사들
  */
 function simulate(game, seconds, botIds) {
@@ -22,7 +22,7 @@ function simulate(game, seconds, botIds) {
   for (let t = 0; t < seconds; t += step) {
     game.tick(step);
     sinceThink += step;
-    if (sinceThink >= 2.5) {
+    if (sinceThink >= 1.5) {
       sinceThink = 0;
       for (const id of botIds) think(game, id);
     }
