@@ -552,8 +552,7 @@ function run(game, seconds) {
 
 /* ---------------- 임대 수입도 경영권 몫의 대상이다 ---------------- */
 {
-  // 주가는 시장 심리에 따라 크게 흔들리므로, 과반을 사고도 남을 만큼 쥐여 준다
-  const g = newGame(500000);
+  const g = newGame(100000);
   const a = g.player('a');
   const b = g.player('b');
 
@@ -561,23 +560,47 @@ function run(game, seconds) {
   g.buyTile('b', idx);
   g.build('b', idx, 'rental');
 
-  // 경영권이 없을 때 b 가 버는 속도
+  /*
+   * 경영권이 없을 때 b 가 버는 속도.
+   *
+   * 현금 증감을 그냥 보면 안 된다 — 시작 자금이 크면 지분 평가액도 커서
+   * 주식 보유세만으로 현금이 줄 수 있다. 아무것도 없는 a 와의 차이로
+   * "임대료가 실제로 들어오는지" 만 떼어 본다.
+   */
   const bCash0 = b.cash;
+  const aCash0 = a.cash;
   run(g, 10);
-  const solo = b.cash - bCash0;
+  const solo = b.cash - bCash0 - (a.cash - aCash0);
   assert.ok(solo > 0, '임대료가 들어온다');
 
-  // a 가 b 를 인수하면 임대 수입의 일부가 a 에게 간다
+  /*
+   * a 가 b 를 인수하면 임대 수입의 일부가 a 에게 간다.
+   *
+   * 과반을 한 번에 사면 체결 충격이 복리로 붙어 평단가가 1.7 배까지 뛴다.
+   * 시작 자금을 올려 봐야 주가도 같이 올라 소용이 없으므로(주가 = 자금 / 총주식수),
+   * 인수 직전에 현금만 따로 채워 "살 돈이 모자라서" 실패하는 일이 없게 한다.
+   */
   g.stocks.b.float += g.stocks.b.unissued;
   g.stocks.b.unissued = 0;
-  g.stockTrade('a', { company: 'b', qty: TAKEOVER_SHARES, side: 'buy' });
+  a.cash = 1e9;
+  assert.ok(g.stockTrade('a', { company: 'b', qty: TAKEOVER_SHARES, side: 'buy' }).ok);
   assert.strictEqual(g.controllerOf('b').id, 'a');
 
-  const aCash0 = a.cash;
+  // 인수당한 쪽은 임대 수입에서 경영권 몫이 떼여 덜 남는다
   const bCash1 = b.cash;
   run(g, 10);
-  assert.ok(a.cash > aCash0, '인수자에게 임대 수입 몫이 들어온다');
   assert.ok(b.cash - bCash1 < solo, '인수당한 쪽은 그만큼 덜 남는다');
+
+  /*
+   * 인수자 쪽은 payIncome 을 직접 태워서 본다.
+   *
+   * tick 으로 보면 방금 사들인 1001 주에 붙는 주식 보유세가 임대료 몫보다
+   * 훨씬 커서, 현금으로도 incomePerSec 로도 경영권 몫이 안 보인다.
+   * 여기서 확인할 것은 "b 의 매출에서 떼인 몫이 a 에게 흘러가는가" 뿐이다.
+   */
+  const aCash2 = a.cash;
+  g.payIncome(b, 1000);
+  assert.ok(a.cash > aCash2, '인수자에게 임대 수입 몫이 들어온다');
   console.log('✓ 임대 수입도 경영권 몫 대상');
 }
 
@@ -692,23 +715,31 @@ function run(game, seconds) {
   assert.ok(usedEff < usedPlain, `재료를 덜 쓴다 (${fmt(usedPlain)} → ${fmt(usedEff)})`);
   assert.ok(Math.abs(p3.inv.machine - p2.inv.machine) < 0.01, '만든 양은 같다');
 
-  // 설비 관리 — 유지비가 줄어 현금이 덜 샌다
+  /*
+   * 설비 관리 — 유지비가 줄어 현금이 덜 샌다.
+   *
+   * 판을 따로 돌려 비교하면 안 된다: 현금 증감에는 보유세·주식 보유세가 섞이는데
+   * 그 크기가 유지비 절감분보다 훨씬 커서, 판마다 다른 시세 잡음에 신호가 묻힌다.
+   * 같은 판에서 똑같은 광산을 가진 두 회사로 비교해야 차이가 유지비뿐이 된다.
+   */
   const g4 = newGame(100000);
   const i4 = g4.map.tiles.findIndex((t) => t.t === 'iron' && !t.owner);
   g4.buyTile('a', i4);
   g4.build('a', i4, 'mine');
+  const i5 = g4.map.tiles.findIndex((t) => t.t === 'iron' && !t.owner);
+  g4.buyTile('b', i5);
+  g4.build('b', i5, 'mine');
+  assert.ok(g4.research('b', 'upkeep').ok, 'b 만 설비 관리 연구를 한다');
+  // 자사주를 비워 둔다 — 두 회사 주가는 각자 랜덤워크하므로 주식 보유세가 서로
+  // 달라지고, 그 차이가 유지비 절감분(30초에 1 남짓)을 통째로 덮는다.
+  g4.player('a').shares = {};
+  g4.player('b').shares = {};
+
   const c4 = g4.player('a').cash;
+  const c5 = g4.player('b').cash;
   run(g4, 30);
   const feePlain = c4 - g4.player('a').cash;
-
-  const g5 = newGame(100000);
-  const i5 = g5.map.tiles.findIndex((t) => t.t === 'iron' && !t.owner);
-  g5.buyTile('a', i5);
-  g5.build('a', i5, 'mine');
-  assert.ok(g5.research('a', 'upkeep').ok);
-  const c5 = g5.player('a').cash;
-  run(g5, 30);
-  const feeCut = c5 - g5.player('a').cash;
+  const feeCut = c5 - g4.player('b').cash;
   assert.ok(feeCut < feePlain, `유지비가 줄어든다 (${fmt(feePlain)} → ${fmt(feeCut)})`);
   console.log('✓ 깎아 주는 연구 (운송비·재료 소비·유지비)');
 }

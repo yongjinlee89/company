@@ -319,6 +319,21 @@ function playStocks(game, me) {
     }
   }
 
+  /*
+   * 방어에 필요한 만큼만 남기고 자사주를 내놓는다.
+   *
+   * 자사주는 배당이 안 나오는데 보유세는 그대로 나가는 순수 비용이고, 물량을
+   * 시장에 풀어야 남들이 사고팔 수 있다. 예전엔 방어로 사기만 하고 파는 길이
+   * 없어서, 봇들이 자사주를 1000주 넘게 끌어안고 유통 물량이 0 까지 말랐다.
+   * 위협이 없을 때, 방어선보다 넉넉히 들고 있는 몫만 조금씩 되판다.
+   */
+  const ownShares = me.shares[me.id] || 0;
+  const keep = DEFEND_FROM; // 이만큼은 방어용으로 남긴다
+  if (!threat && ownShares > keep + LOT) {
+    const qty = Math.min(ownShares - keep, LOT);
+    if (qty > 0 && game.stockTrade(me.id, { company: me.id, qty, side: 'sell' }).ok) return;
+  }
+
   // 공매도해 둔 게 고평가가 풀려 제값 근처로 돌아왔으면 청산해 이익을 실현한다
   for (const [cid, pos] of Object.entries(me.shorts || {})) {
     if (!pos.shares) continue;
@@ -332,7 +347,16 @@ function playStocks(game, me) {
     }
   }
 
-  // 들고 있는 남의 주식이 비싸졌으면 판다 (차익 실현 — 주가가 내려가는 힘이 된다)
+  /*
+   * 들고 있는 남의 주식을 판다 — 주가가 내려가는 힘이자, 유통 물량을 시장에
+   * 되돌려 놓는 유일한 통로다.
+   *
+   * 매도 문턱(1.12)이 매수 문턱(1.02)에 너무 가까우면 같은 자리에서 사고팔며
+   * 스프레드만 까먹고, 너무 멀면(예전 1.25) 아무도 안 팔아서 물량이 말라붙는다.
+   * 현금이 급하면 제값이어도 내다 파는 길도 열어 둔다 — 실제로 돈이 필요하면
+   * 투자부터 정리하는 게 자연스럽고, 그래야 시장에 물량이 돈다.
+   */
+  const needCash = me.cash < 300;
   for (const [cid, n] of Object.entries(me.shares)) {
     if (cid === me.id || n < 1) continue;
     const target = game.player(cid);
@@ -341,7 +365,7 @@ function playStocks(game, me) {
     const fair = fairPrice(game, target);
     // 경영권을 쥐고 있으면 팔지 않는다 (그 자체로 돈이 들어온다)
     if (game.controllerOf(cid) && game.controllerOf(cid).id === me.id) continue;
-    if (s.price > fair * 1.25) {
+    if (s.price > fair * 1.12 || needCash) {
       game.stockTrade(me.id, { company: cid, qty: Math.min(n, LOT), side: 'sell' });
       return;
     }

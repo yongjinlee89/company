@@ -45,6 +45,19 @@ const TAKEOVER_SHARES = 1001; // 과반 — 이만큼 모으면 경영권 인수
 // 평단가가 얼마나 뛰는지" 가 예전과 같게 유지된다. (400주 = 20% 에 약 49%)
 const STOCK_IMPACT = 0.001;
 const STOCK_SPREAD = 0.005; // 매수는 비싸게, 매도는 싸게 체결되는 폭
+/*
+ * 공매도·환매는 체결 충격을 훨씬 작게 잡는다.
+ *
+ * 매수 충격은 "남의 회사를 싼값에 쓸어 담지 못하게" 하려고 일부러 크게 뒀는데,
+ * 공매도는 팔았다가 되사는 왕복이라 그 충격을 양쪽에서 두 번 맞는다. 같은
+ * 계수를 쓰면 400주 왕복에 거래대금의 33% 가 마찰로 날아가서, 실적 부진
+ * 사건(25~45% 하락)을 정확히 맞혀도 본전이 안 나온다 — 아무도 공매도를
+ * 할 이유가 없어진다.
+ *
+ * 공매도는 소유권이 오가지 않는 거래라 호가를 덜 흔든다고 보고 따로 둔다.
+ * 이러면 왕복 마찰이 13% 수준이라, 하락을 맞히면 실제로 돈이 남는다.
+ */
+const SHORT_IMPACT = 0.0003;
 
 /*
  * 우량주 — 특정 플레이어 회사에 안 묶인 대형 종목. 개별 회사(500주)보다 훨씬
@@ -107,6 +120,20 @@ const TAX_HALF = 80; // 초당 수익이 이만큼일 때 최고세율의 절반
  * 0.03%/초 = 10분에 자산의 약 16%.
  */
 const PROPERTY_TAX_RATE = 0.0003;
+
+/*
+ * 주식 보유세 — 주식만 보유 비용이 0 이면 아무도 팔지 않는다.
+ *
+ * 땅·건물·재고는 보유세에 유지비에 감가까지 무는데 주식만 공짜였다. 게다가
+ * 순자산은 주식을 시세로 세므로, 파는 순간 스프레드와 체결 충격만큼 점수가
+ * 깎인다 — 들고 있는 게 언제나 이득이라 매수 116 : 매도 28 로 기울고
+ * 유통 물량(float)이 0 까지 말라붙었다.
+ *
+ * 배당(0.04%/초)보다 낮게 잡아서, 남의 회사 주식은 여전히 들고 있을 만하다
+ * (배당 − 보유세 = +0.02%/초). 반면 자사주는 배당이 안 나오므로 순수하게
+ * 비용만 남아, 방어에 필요한 만큼만 들고 나머지는 내놓게 된다.
+ */
+const STOCK_TAX_RATE = 0.0002;
 
 /*
  * 감가상각 — 설비는 지은 순간부터 값이 떨어진다. 초당 이 비율씩 깎이되
@@ -558,6 +585,7 @@ class Game {
         name: bc.name,
         price: start,
         baseline: start,
+        start, // 개장가 — 누적 수익률을 보여 주려고 남겨 둔다
         float: BLUE_CHIP_SHARES, // 처음부터 전량 상장이라 unissued 가 없다
         npc: 0,
         mood: 1,
@@ -899,7 +927,7 @@ class Game {
     let price = s.price;
     let proceeds = 0;
     for (let i = 0; i < qty; i++) {
-      price = Math.max(0.01, price * (1 - STOCK_IMPACT));
+      price = Math.max(0.01, price * (1 - SHORT_IMPACT));
       proceeds += price * (1 - STOCK_SPREAD);
     }
     proceeds = Math.round(proceeds);
@@ -932,7 +960,7 @@ class Game {
     let cost = 0;
     for (let i = 0; i < qty; i++) {
       cost += price * (1 + STOCK_SPREAD);
-      price = price * (1 + STOCK_IMPACT);
+      price = price * (1 + SHORT_IMPACT);
     }
     cost = Math.round(cost);
     if (p.cash < cost) return { ok: false, error: `현금이 부족합니다. (필요 ${cost})` };
@@ -1384,6 +1412,21 @@ class Game {
     }
     company.cash += net;
     company._incomeAccum += net;
+  }
+
+  /**
+   * 유지비·세금처럼 매 초 나가는 비용을 물린다.
+   *
+   * 현금이 모자라면 못 낸 만큼이 빚으로 넘어간다 — 대출 이자와 같은 방식이다.
+   * 그냥 빼면 현금이 마이너스로 내려가서, "현금은 음수가 될 수 없다" 는 전제로
+   * 쓰인 곳들(자동 매수·건설 판정 등)이 조용히 어긋난다.
+   */
+  charge(p, amount) {
+    if (!(amount > 0)) return;
+    const fromCash = Math.min(amount, Math.max(0, p.cash));
+    p.cash -= fromCash;
+    p.debt += amount - fromCash;
+    p._incomeAccum -= amount;
   }
 
   /**
@@ -1893,13 +1936,13 @@ class Game {
       // 설비 관리 연구가 유지비를 깎아 준다
       const fee =
         spec.cost * (tile.level || 1) * UPKEEP_RATE * this.researchMult(owner, 'upkeep') * dt;
-      owner.cash -= fee;
-      owner._incomeAccum -= fee;
+      this.charge(owner, fee);
     }
 
-    // 4-c) 보유세 — 쌓아 둔 자산(땅·건물·재고)에 매 초 붙는다.
+    // 4-c) 보유세 — 쌓아 둔 자산에 매 초 붙는다.
     //      법인세가 "버는 것" 을 깎는다면 이건 이미 쌓인 더미 자체를 깎아서,
-    //      설비만 잔뜩 깔아 두고 버티는 게 공짜가 되지 않게 한다.
+    //      쌓아 두고 버티는 게 공짜가 되지 않게 한다. 주식만 빼 두면 돈이
+    //      전부 주식으로 몰려 아무도 팔지 않으므로 주식에도 (더 낮은 요율로) 매긴다.
     for (const p of this.players) {
       let holdings = 0;
       for (const [k, n] of Object.entries(p.inv)) {
@@ -1908,10 +1951,14 @@ class Game {
       for (let i = 0; i < this.map.tiles.length; i++) {
         if (this.map.tiles[i].owner === p.id) holdings += this.tileValue(i);
       }
-      if (holdings <= 0) continue;
-      const tax = holdings * PROPERTY_TAX_RATE * dt;
-      p.cash -= tax;
-      p._incomeAccum -= tax;
+      let stockValue = 0;
+      for (const [cid, n] of Object.entries(p.shares)) {
+        if (!n) continue;
+        const s = this.stocks[cid] || this.blueChips[cid];
+        if (s) stockValue += s.price * n;
+      }
+      const tax = (holdings * PROPERTY_TAX_RATE + stockValue * STOCK_TAX_RATE) * dt;
+      if (tax > 0) this.charge(p, tax);
     }
 
     // 5) 금리 국면이 흐른다 — 대출·채권에 같은 배수로 걸리므로 둘의 상하 관계는 유지된다
@@ -2127,6 +2174,7 @@ class Game {
         buildings: BUILDINGS,
         totalShares: TOTAL_SHARES,
         blueChipShares: BLUE_CHIP_SHARES,
+        blueChipGrowth: BLUE_CHIP_GROWTH,
         takeoverShares: TAKEOVER_SHARES,
         dividendYield: DIVIDEND_YIELD,
         takeoverCut: TAKEOVER_CUT,

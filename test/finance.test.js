@@ -306,8 +306,9 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   const g = newGame(50000, 1200);
   const a = g.player('a');
 
-  // 아무것도 없으면 안 걷힌다
+  // 땅·건물·재고가 없으면 그쪽으로는 안 걷힌다 (자사주에 붙는 주식 보유세는 별개)
   const idle = g.player('b');
+  idle.shares = {};
   const idleCash = idle.cash;
   run(g, 5);
   assert.ok(Math.abs(idle.cash - idleCash) < 0.01, '가진 게 없으면 보유세도 없다');
@@ -513,6 +514,44 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   console.log('✓ 공매도 (하락 시 이익 / 상승 시 손실, 순자산에 부채로 반영)');
 }
 
+/* ---------------- 공매도가 실제로 돈이 되는가 (왕복 마찰) ---------------- */
+{
+  const QTY = 400;
+  const roundTrip = (move) => {
+    const g = newGame(500000);
+    const p0 = g.stocks.b.price;
+    const open = g.shortSell('a', 'b', QTY);
+    assert.ok(open.ok);
+    g.stocks.b.price = p0 * move; // 사건으로 주가가 이만큼 움직였다고 치고
+    const close = g.coverShort('a', 'b', QTY);
+    assert.ok(close.ok);
+    return { profit: close.profit, proceeds: open.proceeds };
+  };
+
+  /*
+   * 주가가 그대로여도 왕복하면 스프레드와 체결 충격만큼은 잃는다.
+   * 다만 그 마찰이 사건 낙폭(실적 부진 25~45%)보다 작아야 공매도가 성립한다 —
+   * 예전에는 매수와 같은 충격 계수를 써서 마찰만 33% 였고, 하락을 정확히
+   * 맞혀도 본전이 안 나와 아무도 공매도를 하지 않았다.
+   */
+  const flat = roundTrip(1);
+  const friction = -flat.profit / flat.proceeds;
+  assert.ok(flat.profit < 0, '주가가 그대로면 왕복 비용만큼 손해다');
+  assert.ok(friction < 0.2, `왕복 마찰이 사건 낙폭보다 작아야 한다 (${(friction * 100).toFixed(1)}%)`);
+
+  // 실적 부진 수준(-35%)을 맞히면 확실히 이익이 남는다
+  const win = roundTrip(0.65);
+  assert.ok(win.profit > 0, `하락을 맞히면 이익이 난다 (${win.profit})`);
+  assert.ok(win.profit > flat.proceeds * 0.15, '맞혔을 때 보상이 마찰을 충분히 넘는다');
+
+  // 반대로 오르면 제대로 손해가 난다 (공짜 베팅이 아니다)
+  const lose = roundTrip(1.3);
+  assert.ok(lose.profit < flat.profit, '주가가 오르면 그만큼 더 손해다');
+  console.log(
+    `✓ 공매도 수익성 (왕복 마찰 ${(friction * 100).toFixed(1)}% · 35% 하락 적중 시 +${win.profit})`
+  );
+}
+
 /* ---------------- 주식 물량 (외부 투자자가 있어도 인수 가능) ---------------- */
 {
   const g = newGame(1000000);
@@ -561,9 +600,19 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   const cash = a.cash;
   run(g, 5);
   assert.ok(Math.abs(a.inv.iron - settled) < 0.01, '목표에 도달하면 더 사지 않는다');
-  // 자동 매수로는 한 푼도 안 나간다. (재고에 붙는 보유세는 계속 빠지므로 그만큼만 허용)
-  const propertyTax = g.liquidationValue('iron', a.inv.iron) * 0.0003 * 5;
-  assert.ok(a.cash >= cash - propertyTax * 1.5, '목표에 도달하면 매수로는 돈을 더 쓰지 않는다');
+  /*
+   * 자동 매수로는 한 푼도 안 나간다.
+   *
+   * 현금은 보유세(재고·자사주)로 계속 조금씩 빠지므로 "그대로" 를 요구할 수 없다.
+   * 매수가 없었다는 건 재고가 안 늘었다는 것으로 이미 확인했고, 여기서는
+   * 빠져나간 돈이 세금으로 설명되는 범위인지만 본다.
+   */
+  const stockValue = Object.entries(a.shares).reduce(
+    (s, [cid, n]) => s + (g.stocks[cid] ? g.stocks[cid].price * n : 0),
+    0
+  );
+  const holdingTax = (g.liquidationValue('iron', a.inv.iron) * 0.0003 + stockValue * 0.0002) * 5;
+  assert.ok(a.cash >= cash - holdingTax * 1.5, '목표에 도달하면 매수로는 돈을 더 쓰지 않는다');
 
   // 공장이 재료를 쓰면 다시 채워 준다 — 이게 이 기능의 목적
   const idx = findTile(g, 'plain');
