@@ -1575,7 +1575,9 @@ function renderCompany() {
         const debt = now.debt > 0 ? ` · 빚 ${fmt(now.debt)}` : '';
         const bonds = now.bonds > 0 ? ` · 채권 ${fmt(now.bonds)}` : '';
         moneyText.textContent = `현금 ${fmt(now.cash)} · 순자산 ${fmt(now.netWorth)}${debt}${bonds} · `;
-        incomeText.textContent = `${now.incomePerSec >= 0 ? '+' : ''}${fmt1(now.incomePerSec)}/초`;
+        // 세율은 수익이 클수록 올라간다 — 잘 벌수록 눈에 띄게 붙는다
+        const tax = now.taxRate > 0.03 ? ` · 세금 ${Math.round(now.taxRate * 100)}%` : '';
+        incomeText.textContent = `${now.incomePerSec >= 0 ? '+' : ''}${fmt1(now.incomePerSec)}/초${tax}`;
         incomeText.className = now.incomePerSec > 0.05 ? 'up' : now.incomePerSec < -0.05 ? 'down' : '';
 
         const invParts = Object.entries(now.inv)

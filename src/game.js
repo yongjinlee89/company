@@ -55,12 +55,19 @@ const STOCK_SPREAD = 0.005; // 매수는 비싸게, 매도는 싸게 체결되�
  * 안정감을 준다. 그래도 금융위기·랠리는 절반 강도로 걸쳐서 완전한 무풍지대는
  * 아니게 한다 — 안 그러면 무조건 여기에만 돈을 넣는 게 정답이 되어 버린다.
  */
-// nvidia 는 반도체 수요와 실제로 이어져 있다 — 이 주가가 뛰면(AI·GPU 붐을 흉내낸다)
-// 반도체 수요가 따라 늘어난다. updateBaselines() 의 하이테크 처리 참고.
+/*
+ * 우량주는 각자 특정 품목의 "전방 수요" 를 대변한다 — 그 회사가 잘나가면 그 품목을
+ * 그만큼 더 사 간다. drives 가 그 연결 고리다.
+ *   엔비디아 ↑ → 반도체 수요 ↑ (updateBaselines 의 하이테크 처리)
+ *   한국중공업 ↑ → 기계 수요 ↑ (도시 판매가에 곱해진다, demandMult 참고)
+ * 덕분에 우량주가 단순한 저금통이 아니라, 어떤 사업을 밀지 고르는 신호가 된다.
+ */
 const BLUE_CHIPS = [
-  { id: 'blue1', name: '한국중공업' },
-  { id: 'nvidia', name: '엔비디아' },
+  { id: 'heavy', name: '한국중공업', drives: 'machine' },
+  { id: 'nvidia', name: '엔비디아', drives: 'semi' },
 ];
+// 전방 수요 배수의 상하한 — 주가가 아무리 튀어도 판매가가 몇 배로 뛰지는 않게 한다
+const DEMAND_DRIVE_RANGE = [0.5, 2];
 const BLUE_CHIP_SHARES = 20000; // 개별 회사(2000주)의 10배 — 처음부터 전량 상장
 // 1주 체결 충격도 그만큼 작다 — 큰돈을 넣어도 시세가 잘 안 밀리는 게 우량주의 핵심이다
 const BLUE_CHIP_IMPACT = 0.0001;
@@ -69,12 +76,28 @@ const BLUE_CHIP_ACTIVITY = 40; // 외인·기관이 초당 굴리는 물량
 // 단위여야 하고, 시가총액(주식수 × 시작가)이 판 전체 자금을 훨씬 웃돌아야
 // "돈을 얼마든지 묻어 둘 수 있는 곳" 이 된다.
 const BLUE_CHIP_START_PRICE = 0.01; // 시작 자금 1000 이면 주당 10원 (시총 20만)
-// 기준가가 초당 이만큼 복리로 우상향 (10분에 약 105%). 채권(10분 82%)보다
+// 기준가가 초당 이만큼 복리로 우상향 (10분에 약 3.7배). 채권(10분 3.3배)보다
 // 조금 나은 대신 시세가 흔들리는 위험을 진다 — 이 차이가 돈이 흘러들 이유가 된다.
-const BLUE_CHIP_GROWTH = 0.0012;
+// 채권 금리를 올리면 이것도 같이 올려야 우량주에 돈이 갈 이유가 유지된다.
+const BLUE_CHIP_GROWTH = 0.0022;
 const BLUE_CHIP_THETA = 0.15; // mood 가 제자리(1)로 돌아오려는 힘 — 개별 주식(0.08)보다 세다
 const BLUE_CHIP_SIGMA = 0.12; // mood 흔들리는 폭 — 개별 주식(0.28)의 절반 이하
 const BLUE_CHIP_MOOD_RANGE = [0.7, 1.3]; // 개별 주식(0.5~1.7)보다 좁은 변동 범위
+
+/*
+ * 누진 법인세 — 중반을 넘기면 돈이 걷잡을 수 없이 불어나는 걸 막는 유일한 장치다.
+ *
+ * 설비가 늘면 수익이 늘고, 그 돈으로 또 설비를 늘리는 복리 구조라 유지비처럼
+ * "건축비에 비례하는 고정 지출" 로는 절대 못 따라잡는다 (수익은 지수로 크는데
+ * 유지비는 선형으로 큰다). 그래서 수익 자체에 비례하고, 수익이 클수록 세율까지
+ * 올라가는 누진세를 물린다 — 잘 버는 쪽일수록 더 많이 빠져나가므로 격차도 덜 벌어진다.
+ *
+ * 세율 = TAX_MAX × 수익 / (수익 + TAX_HALF) — 수익이 TAX_HALF 일 때 최고세율의 절반.
+ * 초당 수익 기준으로 25 → 12%, 100 → 30%, 300 → 45%, 600 → 52% 쯤 걷힌다.
+ * 세율이 100% 에 닿지 않으므로 더 버는 게 손해가 되는 일은 없다.
+ */
+const TAX_MAX = 0.7; // 아무리 벌어도 이 비율은 넘지 않는다
+const TAX_HALF = 80; // 초당 수익이 이만큼일 때 최고세율의 절반
 
 // 배당은 주가에 비례해 초당 지급된다. 0.002 = 주가의 0.2%/초.
 // 주가가 오를수록 배당도 커지고, 회사 현금에서 빠져나가므로 남에게 지분을
@@ -90,13 +113,13 @@ const TAKEOVER_CUT = 0.25; // 경영권 보유자가 가져가는 매출 비율
  * 사실상 공짜 시드머니로 굴러갔다. 배당(0.04%/초)보다 확실히 비싸고, 총자산의 절반이
  * 아니라 1/3 정도만 빌리게 좁혀서 — 갚을 여력을 넘어서는 확장은 진짜 손해가 나게 한다.
  */
-const LOAN_INTEREST = 0.003; // 대출 기준 이자 (초당 0.3% — 10분이면 약 3.7배)
+const LOAN_INTEREST = 0.006; // 대출 기준 이자 (초당 0.6% — 10분이면 원금의 약 36배)
 const LOAN_MIN_LIMIT = 400; // 자산이 없어도 이만큼은 빌릴 수 있다
 const LOAN_RATIO = 0.35; // 총자산 대비 최대 대출 비율
-// 채권 기준 이자 (초당 0.1% — 10분이면 약 82%). 대출 이자보다 항상 낮게 유지해야
+// 채권 기준 이자 (초당 0.2% — 10분이면 약 3.3배). 대출 이자보다 항상 낮게 유지해야
 // 빌려서 채권을 사는 것만으로 차익이 나는 일이 없다 — rateMult 를 둘에 똑같이
 // 곱하므로 금리가 오르내려도 이 관계는 안 깨진다.
-const BOND_INTEREST = 0.001;
+const BOND_INTEREST = 0.002;
 /*
  * 금리는 고정이 아니라 계속 움직인다. 대출과 채권에 같은 배수(rateMult)를
  * 곱해서, 금리가 높은 국면엔 빚이 무섭고 채권이 매력적이고, 낮은 국면엔
@@ -690,6 +713,21 @@ class Game {
 
   /* ---------------------------------------------------------------- 대출 */
 
+  /**
+   * 이 품목의 전방 수요 배수 — 그 품목을 대변하는 우량주가 제값보다 얼마나
+   * 올라 있는지를 그대로 쓴다. 우량주가 없는 품목은 1(영향 없음).
+   */
+  demandMult(key) {
+    for (const bc of BLUE_CHIPS) {
+      if (bc.drives !== key) continue;
+      const s = this.blueChips[bc.id];
+      if (!s || !s.baseline) return 1;
+      const raw = s.price / s.baseline;
+      return Math.min(DEMAND_DRIVE_RANGE[1], Math.max(DEMAND_DRIVE_RANGE[0], raw));
+    }
+    return 1;
+  }
+
   /** 지금 국면의 대출 이자 (초당) */
   loanRate() {
     return LOAN_INTEREST * this.rateMult;
@@ -1046,7 +1084,8 @@ class Game {
     const owner = tile && tile.owner;
     const transport = transportQuote(dist, rate);
     transport.cost = Math.round(transport.cost * this.researchMult(owner, 'logistics') * 100) / 100;
-    const unit = spec.base * c.mod[useMode] * c.demand[useMode] * (c.boost || 1);
+    // 한국중공업이 오르면 기계 판매가도 그만큼 오른다 (전방 수요)
+    const unit = spec.base * c.mod[useMode] * c.demand[useMode] * (c.boost || 1) * this.demandMult(useMode);
     const revenue = unit * rate * this.researchMult(owner, 'price');
     return {
       city: cityIndex,
@@ -1257,13 +1296,26 @@ class Game {
       const controller = this.controllerOf(company.id);
       if (controller) {
         const cut = net * TAKEOVER_CUT;
-        controller.cash += cut;
-        controller._incomeAccum += cut;
+        // 경영권 몫도 그 사람 수익이므로 그쪽 세율로 세금을 뗀다
+        const afterTax = cut * (1 - this.taxRate(controller));
+        controller.cash += afterTax;
+        controller._incomeAccum += afterTax;
         net -= cut;
       }
+      // 누진 법인세 — 판에서 돈이 실제로 사라지는 지점이다 (누구에게도 안 간다)
+      net *= 1 - this.taxRate(company);
     }
     company.cash += net;
     company._incomeAccum += net;
+  }
+
+  /**
+   * 지금 이 회사에 걸리는 법인세율. 초당 수익이 클수록 높아지되 TAX_MAX 를 넘지 않아
+   * "더 벌면 손해" 가 되는 구간은 생기지 않는다.
+   */
+  taxRate(p) {
+    const inc = Math.max(0, p.incomePerSec);
+    return (TAX_MAX * inc) / (inc + TAX_HALF);
   }
 
   /**
@@ -1342,9 +1394,7 @@ class Game {
         // 반도체는 엔비디아 주가에 실제 수요가 걸려 있다 — 엔비디아가 제값보다
         // 뛸수록(AI·GPU 붐) 반도체 수요도 그만큼 따라 늘어난다. 엔비디아가 가라앉으면
         // 반대로 반도체도 눌린다 — 공급만 있고 수요가 없는 상태를 벗어나게 한다.
-        const nv = key === 'semi' ? this.blueChips.nvidia : null;
-        const demandDriver = nv ? nv.price / nv.baseline : 1;
-        const target = origin * m.vol * demandDriver;
+        const target = origin * m.vol * this.demandMult(key);
         m.baseline += (target - m.baseline) * 0.05 * dt;
       }
       // 사건 배수는 따로 곱해 둔다 (기준가가 흐르는 중에도 사건이 겹칠 수 있다).
@@ -1700,6 +1750,7 @@ class Game {
           city.mod[product] *
           city.demand[product] *
           (city.boost || 1) *
+          this.demandMult(product) * // 한국중공업이 오르면 기계 판매가도 오른다
           this.researchMult(owner, 'price');
         const transport = transportQuote(dist, rate);
         // 운송비는 "초당" 기준이므로 실제로 보낸 양의 비율만큼만 물린다.
@@ -1956,6 +2007,7 @@ class Game {
           ),
           incomePerSec: p.incomePerSec,
           netWorth: this.netWorth(p),
+          taxRate: Math.round(this.taxRate(p) * 1000) / 1000,
           controller: (() => {
             const c = this.controllerOf(p.id);
             return c ? c.id : null;

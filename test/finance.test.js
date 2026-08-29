@@ -259,6 +259,76 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   console.log(`✓ 우량주 (${ids.length}종목 × ${BLUE_CHIP_SHARES}주 전량 상장, 순자산에 시가로 반영)`);
 }
 
+/* ---------------- 누진 법인세 ---------------- */
+{
+  const g = newGame(1000, 1200);
+  const a = g.player('a');
+
+  // 수익이 없으면 세금도 없다
+  a.incomePerSec = 0;
+  assert.strictEqual(g.taxRate(a), 0, '수익이 없으면 세금도 없다');
+
+  // 많이 벌수록 세율이 오른다 (누진)
+  let prev = 0;
+  for (const inc of [10, 50, 100, 300, 1000]) {
+    a.incomePerSec = inc;
+    const rate = g.taxRate(a);
+    assert.ok(rate > prev, `수익이 늘면 세율도 오른다 (${inc}/초 → ${(rate * 100).toFixed(0)}%)`);
+    assert.ok(rate < 1, '세율이 100% 에 닿지 않아야 더 버는 게 손해가 안 된다');
+    prev = rate;
+  }
+
+  // 실제로 매출에서 떼인다 — 세금은 누구에게도 안 가고 판에서 사라진다
+  a.incomePerSec = 500; // 고세율 구간
+  const rate = g.taxRate(a);
+  assert.ok(rate > 0.4, `고수익이면 세율이 충분히 높다 (${(rate * 100).toFixed(0)}%)`);
+  const cash0 = a.cash;
+  g.payIncome(a, 1000);
+  const got = a.cash - cash0;
+  assert.ok(Math.abs(got - 1000 * (1 - rate)) < 1, `세후만 들어온다 (${got.toFixed(0)} / 세전 1000)`);
+
+  // 적자는 세금을 매기지 않는다 (그대로 빠져나간다)
+  const cash1 = a.cash;
+  g.payIncome(a, -100);
+  assert.ok(Math.abs(a.cash - cash1 + 100) < 0.01, '적자에는 세금을 매기지 않는다');
+
+  // 잘 버는 쪽이 더 많이 낸다 — 격차가 무한정 벌어지지 않게 하는 게 목적
+  const small = g.player('b');
+  small.incomePerSec = 10;
+  assert.ok(g.taxRate(small) < g.taxRate(a) / 3, '작은 회사는 거의 안 걷힌다');
+  console.log(
+    `✓ 누진 법인세 (10/초 → ${(g.taxRate(small) * 100).toFixed(0)}% · 500/초 → ${(rate * 100).toFixed(0)}%)`
+  );
+}
+
+/* ---------------- 한국중공업 주가가 기계 판매가를 끌어올린다 ---------------- */
+{
+  const g = newGame(1000, 1200);
+  const idx = g.map.tiles.findIndex((t) => t.t === 'plain' && !t.owner);
+  g.buyTile('a', idx);
+  g.build('a', idx, 'factory');
+
+  const at = (mult) => {
+    g.blueChips.heavy.price = g.blueChips.heavy.baseline * mult;
+    return g.quoteRoute(idx, 0, 'machine').revenue;
+  };
+  const flat = at(1);
+  const boom = at(2);
+  const bust = at(0.5);
+  assert.ok(boom > flat * 1.5, `한국중공업이 뛰면 기계 매출도 오른다 (${flat} → ${boom})`);
+  assert.ok(bust < flat * 0.7, `가라앉으면 기계 매출도 준다 (${flat} → ${bust})`);
+
+  // 배수는 상하한이 있어 판매가가 몇 배로 튀지는 않는다
+  g.blueChips.heavy.price = g.blueChips.heavy.baseline * 100;
+  assert.ok(g.demandMult('machine') <= 2.001, '전방 수요 배수에 상한이 있다');
+  g.blueChips.heavy.price = g.blueChips.heavy.baseline * 0.01;
+  assert.ok(g.demandMult('machine') >= 0.5, '하한도 있다');
+
+  // 우량주가 대변하지 않는 품목은 영향을 안 받는다
+  assert.strictEqual(g.demandMult('food'), 1, '식품은 연동 대상이 아니다');
+  console.log(`✓ 한국중공업 → 기계 수요 연동 (폭락 ${bust} / 제자리 ${flat} / 폭등 ${boom})`);
+}
+
 /* ---------------- 엔비디아 주가가 반도체 수요를 끌어올린다 ---------------- */
 {
   const measure = (mult) => {

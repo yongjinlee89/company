@@ -785,7 +785,14 @@ function run(game, seconds) {
   assert.ok(g.operatingWorth(a) < worthA0, '주식을 사면 현금이 나가 본업 가치는 오히려 준다');
   assert.ok(g.netWorth(a) > 0, '순위용 순자산에는 보유 주식이 포함된다');
 
-  run(g, 20);
+  // 보려는 건 "남의 주식 보유가 내 주가를 밀어올리지 않는다" 이므로, 단기 주가를
+  // 크게 흔드는 시장 심리(최대 1.7배)와 시장 전체 사건은 고정해 두고 본다.
+  for (let t = 0; t < 20; t += 0.25) {
+    g.tick(0.25);
+    g.stocks.a.mood = 1;
+    g.stocks.a.eventMult = 1;
+    g.marketMult = 1;
+  }
   assert.ok(g.stocks.a.price <= priceA0 * 1.3, '남의 주식을 샀다고 내 주가가 뛰지 않는다');
 
   // 반대로 실제로 회사를 키우면 주가가 오른다.
