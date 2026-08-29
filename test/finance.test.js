@@ -110,21 +110,21 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   assert.ok(limit >= LOAN_MIN_LIMIT, `자산이 적어도 최소 ${LOAN_MIN_LIMIT} 은 빌릴 수 있다`);
   assert.ok(!g.borrow('a', limit + 1).ok, '한도를 넘으면 거부');
 
-  assert.ok(g.borrow('a', 500).ok);
-  assert.strictEqual(a.cash, 1500);
-  assert.strictEqual(a.debt, 500);
+  assert.ok(g.borrow('a', 300).ok);
+  assert.strictEqual(a.cash, 1300);
+  assert.strictEqual(a.debt, 300);
 
-  // 빌린 돈은 순자산을 늘리지 않는다 (현금 +500, 빚 -500)
+  // 빌린 돈은 순자산을 늘리지 않는다 (현금 +300, 빚 -300)
   const g2 = newGame(1000);
   const worthBefore = g2.netWorth(g2.player('a'));
-  g2.borrow('a', 500);
+  g2.borrow('a', 300);
   assert.strictEqual(g2.netWorth(g2.player('a')), worthBefore, '대출은 순자산을 부풀리지 않는다');
 
   // 이자가 초당 빠져나간다
   const cashBefore = a.cash;
   run(g, 10);
   const paid = cashBefore - a.cash;
-  const expected = 500 * LOAN_INTEREST * 10;
+  const expected = 300 * LOAN_INTEREST * 10;
   assert.ok(Math.abs(paid - expected) < expected * 0.05, `10초치 이자 ≈ ${expected.toFixed(2)} (실제 ${paid.toFixed(2)})`);
 
   // 상환
@@ -138,7 +138,7 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   // 현금이 없으면 이자가 원금에 붙는다 (복리)
   const g3 = newGame(1000);
   const c = g3.player('a');
-  g3.borrow('a', 600);
+  g3.borrow('a', 300);
   c.cash = 0;
   const d0 = c.debt;
   run(g3, 20);
