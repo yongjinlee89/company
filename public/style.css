@@ -573,6 +573,11 @@ input:focus, select:focus {
   gap: 5px;
 }
 
+/* 우량주는 개별 회사 주식과 눈에 띄게 구분되도록 테두리 색을 달리한다 */
+.blue-chip {
+  border-color: #3d5a80;
+}
+
 .stock-price {
   font-variant-numeric: tabular-nums;
 }

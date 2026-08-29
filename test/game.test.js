@@ -817,7 +817,7 @@ function run(game, seconds) {
   const a = g.player('a');
 
   // 창업자가 자기 회사 지분을 전부 판다 — 그 회사에서 내 몫은 정확히 0이 된다
-  assert.ok(g.stockTrade('a', { company: 'a', qty: 50, side: 'sell' }).ok);
+  assert.ok(g.stockTrade('a', { company: 'a', qty: FOUNDER_SHARES, side: 'sell' }).ok);
   assert.strictEqual(a.shares.a || 0, 0, '자사주가 하나도 안 남는다');
   assert.strictEqual(
     g.netWorth(a),
@@ -995,28 +995,18 @@ function run(game, seconds) {
   // 창업자는 지분을 거의 안 들고 시작한다 (자기 주식이 승패를 좌우하지 않게)
   assert.strictEqual(a.shares.a, FOUNDER_SHARES);
   assert.ok(FOUNDER_SHARES <= TOTAL_SHARES * 0.2, '창업자 초기 지분은 소액');
-  assert.strictEqual(g.availableShares('a'), INITIAL_FLOAT, '개장 물량은 일부만 나와 있다');
-  assert.strictEqual(g.stocks.a.unissued, TOTAL_SHARES - FOUNDER_SHARES - INITIAL_FLOAT);
+  assert.strictEqual(g.availableShares('a'), INITIAL_FLOAT, '창업자 몫을 뺀 전량이 개장 즉시 나와 있다');
+  assert.strictEqual(g.stocks.a.unissued, 0, '미발행 물량 없이 처음부터 전량 상장');
 
-  // 개장 직후에는 물량이 적어 회사를 통째로 살 수 없다
+  // 조금 사면 주가가 오르고, 과반에 못 미치면 경영권은 안 넘어온다
   const p0 = g.stocks.b.price;
-  assert.ok(
-    !g.stockTrade('a', { company: 'b', qty: TAKEOVER_SHARES, side: 'buy' }).ok,
-    '상장 물량이 적어 초반에 과반을 살 수 없다'
-  );
-  assert.ok(g.stockTrade('a', { company: 'b', qty: INITIAL_FLOAT, side: 'buy' }).ok);
-  assert.strictEqual(a.shares.b, INITIAL_FLOAT);
+  assert.ok(g.stockTrade('a', { company: 'b', qty: 100, side: 'buy' }).ok);
+  assert.strictEqual(a.shares.b, 100);
   assert.ok(g.stocks.b.price > p0, '매수하면 주가가 오른다');
-  assert.strictEqual(g.controllerOf('b'), null, '초반 물량으로는 경영권을 못 가져간다');
-
-  // 시간이 지나면 미발행 물량이 상장되어 인수 길이 열린다
-  const unissued0 = g.stocks.b.unissued;
-  run(g, 500);
-  assert.ok(g.stocks.b.unissued < unissued0, '시간이 지나면 조금씩 상장된다');
-  assert.ok(g.availableShares('b') > INITIAL_FLOAT, '살 수 있는 물량이 늘어난다');
+  assert.strictEqual(g.controllerOf('b'), null, '과반에 못 미치면 경영권은 그대로');
 
   const need = TAKEOVER_SHARES - (a.shares.b || 0);
-  assert.ok(g.availableShares('b') >= need, '후반에는 과반을 모을 물량이 나온다');
+  assert.ok(g.availableShares('b') >= need, '개장 즉시 과반을 모을 물량이 있다');
   assert.ok(g.stockTrade('a', { company: 'b', qty: need, side: 'buy' }).ok);
   assert.strictEqual(a.shares.b, TAKEOVER_SHARES);
   assert.strictEqual(g.controllerOf('b').id, 'a', '과반을 모으면 경영권을 가져온다');

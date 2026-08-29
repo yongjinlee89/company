@@ -132,6 +132,7 @@ io.on('connection', (socket) => {
   socket.on('trade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.trade(pid, p))));
   socket.on('setAutoBuy', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.setAutoBuy(pid, p.mat, p.target))));
   socket.on('stockTrade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.stockTrade(pid, p))));
+  socket.on('blueChipTrade', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.blueChipTrade(pid, p))));
 
   // 자산 매각 / 부동산
   socket.on('sellTile', withRoom((room, pid, p) => room.gameAction(pid, (g) => g.sellTile(pid, p.idx))));

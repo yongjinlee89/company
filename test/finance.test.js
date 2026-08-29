@@ -8,6 +8,7 @@ const {
   TAKEOVER_SHARES, AUTO_BUY_RATE, AUTO_BUY_RESERVE,
   TOTAL_SHARES, FOUNDER_SHARES, INITIAL_FLOAT,
   BOND_INTEREST, MARKET_CRASH_MULT, MARKET_RALLY_MULT, COMPANY_SLUMP_MULT, COMPANY_BOOM_MULT,
+  BLUE_CHIP_SHARES,
 } = require('../src/game');
 
 function newGame(startCash = 5000, duration = 600) {
@@ -15,6 +16,13 @@ function newGame(startCash = 5000, duration = 600) {
 }
 function run(game, seconds) {
   for (let t = 0; t < seconds; t += 0.25) game.tick(0.25);
+}
+/** 금리를 기준값에 고정한 채 돌린다 — 이자 계산 자체를 볼 때 쓴다 */
+function runFixedRate(game, seconds) {
+  for (let t = 0; t < seconds; t += 0.25) {
+    game.tick(0.25);
+    game.rateMult = 1;
+  }
 }
 const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.owner);
 
@@ -120,9 +128,9 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   g2.borrow('a', 300);
   assert.strictEqual(g2.netWorth(g2.player('a')), worthBefore, '대출은 순자산을 부풀리지 않는다');
 
-  // 이자가 초당 빠져나간다
+  // 이자가 초당 빠져나간다 (금리 변동은 따로 보므로 여기선 기준값에 고정한다)
   const cashBefore = a.cash;
-  run(g, 10);
+  runFixedRate(g, 10);
   const paid = cashBefore - a.cash;
   const expected = 300 * LOAN_INTEREST * 10;
   assert.ok(Math.abs(paid - expected) < expected * 0.05, `10초치 이자 ≈ ${expected.toFixed(2)} (실제 ${paid.toFixed(2)})`);
@@ -163,9 +171,9 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   g2.buyBond('a', 500);
   assert.strictEqual(g2.netWorth(g2.player('a')), worthBefore, '채권은 순자산을 부풀리지 않는다');
 
-  // 이자가 초당 원금에 붙는다 (복리)
+  // 이자가 초당 원금에 붙는다 (복리). 금리 변동은 따로 보므로 기준값에 고정한다.
   const bondsBefore = a.bonds;
-  run(g, 10);
+  runFixedRate(g, 10);
   const gained = a.bonds - bondsBefore;
   const expected = bondsBefore * BOND_INTEREST * 10;
   assert.ok(
@@ -182,6 +190,95 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   assert.strictEqual(a.bonds, 0);
   assert.ok(!g.redeemBond('a', 100).ok, '채권이 없으면 거부');
   console.log(`✓ 채권 (이자 ${BOND_INTEREST * 100}%/초 복리, 대출보다 낮은 이율)`);
+}
+
+/* ---------------- 금리 변동 ---------------- */
+{
+  const g = newGame(1000, 1200);
+  assert.strictEqual(g.rateMult, 1, '처음엔 기준 금리');
+
+  let lo = g.loanRate();
+  let hi = g.loanRate();
+  for (let i = 0; i < 400; i++) {
+    run(g, 1);
+    lo = Math.min(lo, g.loanRate());
+    hi = Math.max(hi, g.loanRate());
+    // 어느 국면에서든 채권이 대출보다 싸야 "빌려서 채권 사기" 차익이 안 생긴다
+    assert.ok(g.bondRate() < g.loanRate(), '채권 이자는 언제나 대출 이자보다 낮다');
+  }
+  const swing = (hi - lo) / LOAN_INTEREST;
+  assert.ok(swing > 0.3, `금리가 실제로 오르내린다 (변동폭 기준금리의 ${(swing * 100).toFixed(0)}%)`);
+  console.log(`✓ 금리 변동 (대출 ${(lo * 100).toFixed(2)}~${(hi * 100).toFixed(2)}%/초, 채권은 항상 그보다 낮음)`);
+}
+
+/* ---------------- 우량주 ---------------- */
+{
+  const g = newGame(100000, 1200);
+  const a = g.player('a');
+  const ids = Object.keys(g.blueChips);
+  assert.strictEqual(ids.length, 2, '우량주는 두 종목');
+  assert.ok(g.blueChips.nvidia, '엔비디아가 있다');
+
+  for (const id of ids) {
+    const s = g.blueChips[id];
+    assert.strictEqual(s.float, BLUE_CHIP_SHARES, '처음부터 전량 상장돼 있다');
+    assert.ok(BLUE_CHIP_SHARES > TOTAL_SHARES, '개별 회사보다 주식수가 많다');
+  }
+
+  // 시가총액이 판 전체 자금을 훨씬 웃돌아야 "얼마든지 묻어 둘 수 있는 곳" 이 된다
+  const cap = g.blueChips.nvidia.price * BLUE_CHIP_SHARES;
+  assert.ok(cap > 100000 * 10, `시총이 시작 자금보다 훨씬 크다 (${cap})`);
+
+  // 매수 → 순자산은 그대로(현금이 주식으로 바뀔 뿐), 보유분은 shares 에 쌓인다
+  const QTY = 20;
+  const worthBefore = g.netWorth(a);
+  const r = g.blueChipTrade('a', { chip: 'nvidia', qty: QTY, side: 'buy' });
+  assert.ok(r.ok, '우량주를 살 수 있다');
+  assert.strictEqual(a.shares.nvidia, QTY);
+  assert.ok(Math.abs(g.netWorth(a) - worthBefore) < worthBefore * 0.02, '산 직후 순자산이 크게 안 변한다');
+
+  // 같은 수량을 사도 개별 회사 주식보다 시세가 훨씬 덜 밀린다 — 이게 우량주의 핵심
+  const g2 = newGame(1000000, 1200);
+  const bcBefore = g2.blueChips.nvidia.price;
+  g2.blueChipTrade('a', { chip: 'nvidia', qty: 200, side: 'buy' });
+  const bcJump = g2.blueChips.nvidia.price / bcBefore;
+  const g3 = newGame(1000000, 1200);
+  const stBefore = g3.stocks.b.price;
+  g3.stockTrade('a', { company: 'b', qty: 200, side: 'buy' });
+  const stJump = g3.stocks.b.price / stBefore;
+  assert.ok(
+    bcJump < stJump,
+    `같은 수량이면 우량주가 훨씬 덜 밀린다 (우량주 ${bcJump.toFixed(3)}배 vs 개별 ${stJump.toFixed(3)}배)`
+  );
+
+  // 매도로 되판다
+  assert.ok(g.blueChipTrade('a', { chip: 'nvidia', qty: QTY, side: 'sell' }).ok);
+  assert.ok(!a.shares.nvidia, '다 팔면 보유분이 사라진다');
+  assert.ok(!g.blueChipTrade('a', { chip: 'nvidia', qty: 1, side: 'sell' }).ok, '없으면 못 판다');
+  assert.ok(!g.blueChipTrade('a', { chip: 'nope', qty: 1, side: 'buy' }).ok, '없는 종목은 거부');
+  console.log(`✓ 우량주 (${ids.length}종목 × ${BLUE_CHIP_SHARES}주 전량 상장, 순자산에 시가로 반영)`);
+}
+
+/* ---------------- 엔비디아 주가가 반도체 수요를 끌어올린다 ---------------- */
+{
+  const measure = (mult) => {
+    const g = newGame(1000, 1200);
+    for (let t = 0; t < 200; t += 0.25) {
+      g.tick(0.25);
+      g.blueChips.nvidia.price = g.blueChips.nvidia.baseline * mult; // 원하는 국면으로 고정
+      g.market.semi.vol = 1; // 랜덤 변동은 끄고 수요 효과만 본다
+    }
+    return g.market.semi.baseline;
+  };
+
+  const boom = measure(2);
+  const flat = measure(1);
+  const bust = measure(0.5);
+  assert.ok(boom > flat * 1.5, `엔비디아가 뛰면 반도체 기준가도 오른다 (${flat.toFixed(0)} → ${boom.toFixed(0)})`);
+  assert.ok(bust < flat * 0.7, `엔비디아가 가라앉으면 반도체도 눌린다 (${flat.toFixed(0)} → ${bust.toFixed(0)})`);
+  console.log(
+    `✓ 엔비디아 → 반도체 수요 연동 (폭락 ${bust.toFixed(0)} / 제자리 ${flat.toFixed(0)} / 폭등 ${boom.toFixed(0)})`
+  );
 }
 
 /* ---------------- 공매도 ---------------- */
@@ -308,36 +405,33 @@ const findTile = (g, type) => g.map.tiles.findIndex((t) => t.t === type && !t.ow
   console.log(`✓ 자재 수량 유지 (초당 ${AUTO_BUY_RATE}개까지 자동 매수)`);
 }
 
-/* ---------------- 점진 상장 + 외인·기관 거래 ---------------- */
+/* ---------------- 즉시 전량 상장 + 외인·기관 거래 ---------------- */
 {
   const g = newGame(1000, 600);
   const s = g.stocks.a;
 
-  // 개장 직후에는 물량이 적다
+  // 개장과 동시에 창업자 몫을 뺀 전량이 시장에 나와 있다
   assert.strictEqual(s.float, INITIAL_FLOAT);
-  assert.ok(s.unissued > 0, '나머지는 아직 미발행');
-  const total0 = s.float + s.npc + s.unissued + FOUNDER_SHARES;
-  assert.strictEqual(total0, TOTAL_SHARES, '주식 총수가 맞는다');
+  assert.strictEqual(s.unissued, 0, '미발행 물량 없이 처음부터 전량 상장');
+  assert.strictEqual(s.float + FOUNDER_SHARES, TOTAL_SHARES, '주식 총수가 맞는다');
+  assert.ok(g.availableShares('a') >= TAKEOVER_SHARES, '개장 즉시 과반을 모을 물량이 있다');
 
-  // 시간이 지나며 상장되고, 외인·기관이 계속 사고판다.
+  // 외인·기관이 계속 사고판다.
   // 체결은 확률적이라 특정 1초가 비어 있을 수 있으므로 여러 초를 지켜본다.
   let peakVolume = 0;
+  let peakNpc = 0;
   for (let i = 0; i < 60; i++) {
     run(g, 1);
     peakVolume = Math.max(peakVolume, s.volume);
+    peakNpc = Math.max(peakNpc, s.npc);
   }
-  assert.ok(s.unissued < total0 - FOUNDER_SHARES - INITIAL_FLOAT, '시간이 지나면 상장된다');
   assert.ok(peakVolume > 0, '외인·기관이 거래한다');
-  assert.ok(s.npc > 0 || s.float > INITIAL_FLOAT, '물량이 시장에서 오간다');
+  assert.ok(peakNpc > 0, '물량이 시장에서 오간다 (외인·기관이 들고 있던 구간이 있다)');
 
   // 총수는 언제나 보존된다
   const total1 = s.float + s.npc + s.unissued + (g.player('a').shares.a || 0);
   assert.strictEqual(total1, TOTAL_SHARES, '거래가 오가도 주식 총수는 그대로');
-
-  // 상장이 끝나면 미발행이 0 이 된다
-  run(g, 500);
-  assert.strictEqual(g.stocks.a.unissued, 0, '게임 후반이면 전량 상장된다');
-  console.log(`✓ 점진 상장 + 외인·기관 거래 (최대 초당 ${peakVolume}주)`);
+  console.log(`✓ 즉시 전량 상장 + 외인·기관 거래 (최대 초당 ${peakVolume}주)`);
 }
 
 /* ---------------- 주가가 오르내린다 ---------------- */

@@ -14,34 +14,68 @@ const MAP_W = 12;
 const MAP_H = 12;
 // 주식 수를 넉넉히 두면 소량 거래로도 값이 튀지 않아 실제로 사고팔 만해진다.
 // (주가 = 순자산 / 총주식수 이므로, 주식을 늘리면 그만큼 주당 가격은 내려간다)
-const TOTAL_SHARES = 500; // 회사당 발행 주식 수
+const TOTAL_SHARES = 2000; // 회사당 발행 주식 수
 /*
  * 창업자는 지분을 거의 들고 시작하지 않는다. 자기 주식을 잔뜩 쥐고 있으면
  * 나중에 주가가 오를 때 그것만으로 승패가 갈려서, 회사를 잘 굴린 것보다
  * 주가 운이 더 중요해진다.
  *
- * 대신 나머지 주식은 처음부터 시장에 다 나와 있지 않고 시간이 지나며 조금씩
- * 상장된다. 그렇지 않으면 아무것도 안 하는 사람이 개장 직후 헐값에 남의 회사를
- * 통째로 사 두고 성장만 받아먹는다.
+ * 나머지는 개장과 동시에 전량 상장된다. 예전엔 시간에 걸쳐 조금씩 풀었는데,
+ * 주식수를 4배로 늘려 한 번에 지분을 쓸어 담기 어려워진 만큼 그 장치가 없어도
+ * 된다 — 처음부터 살 물량이 넉넉해야 주식이 실제로 굴러간다.
  */
-const FOUNDER_SHARES = 50; // 창업자 초기 지분 (10%)
-const INITIAL_FLOAT = 50; // 개장 시 시장에 나와 있는 물량
-const LISTING_PORTION = 0.7; // 게임 시간의 이 비율에 걸쳐 나머지가 상장된다
+const FOUNDER_SHARES = 200; // 창업자 초기 지분 (10%)
+const INITIAL_FLOAT = TOTAL_SHARES - FOUNDER_SHARES; // 개장 즉시 나머지 전량 상장
+const LISTING_PORTION = 0.7; // (미발행 물량이 남았을 때만 쓰인다)
 // 외인·기관이 초당 굴리는 물량. 사람이 적어도 호가가 계속 움직이게 한다.
-const NPC_ACTIVITY = 5;
+// 주식수가 4배가 됐으므로 물량도 그만큼 키워야 체감 거래가 유지된다.
+const NPC_ACTIVITY = 20;
 /*
  * 외인·기관도 공매도를 친다. 위의 float/npc 물량 회전만으로는 "가진 걸 되판다"
  * 수준이라 하락 압력에 한계가 있다 — 진짜 공매도(빌려서 판다)를 별도 채널로 둬서,
  * 고평가일수록 눌리는 힘을 real 물량 보존과 무관하게 추가한다.
  * npcShort 는 어느 플레이어 소유도 아닌 합성 포지션이라 현금·증거금이 없다.
  */
-const NPC_SHORT_ACTIVITY = 3; // 공매도 채널이 초당 굴리는 물량
-const NPC_MAX_SHORT = 250; // 회사당 외인·기관 공매도 잔고 한도
-const TAKEOVER_SHARES = 251; // 과반 — 이만큼 모으면 경영권 인수
+const NPC_SHORT_ACTIVITY = 12; // 공매도 채널이 초당 굴리는 물량
+const NPC_MAX_SHORT = 1000; // 회사당 외인·기관 공매도 잔고 한도
+const TAKEOVER_SHARES = 1001; // 과반 — 이만큼 모으면 경영권 인수
 // 1주 체결마다 움직이는 주가 비율. 지분을 크게 모을수록 평단가가 확 올라가서,
-// 남의 회사를 싼값에 쓸어 담기 어렵게 만든다. (100주면 약 49%)
-const STOCK_IMPACT = 0.004;
+// 남의 회사를 싼값에 쓸어 담기 어렵게 만든다.
+// 주식수를 4배로 늘렸으므로 1주당 충격은 1/4 로 줄여야 "지분 X% 를 모을 때
+// 평단가가 얼마나 뛰는지" 가 예전과 같게 유지된다. (400주 = 20% 에 약 49%)
+const STOCK_IMPACT = 0.001;
 const STOCK_SPREAD = 0.005; // 매수는 비싸게, 매도는 싸게 체결되는 폭
+
+/*
+ * 우량주 — 특정 플레이어 회사에 안 묶인 대형 종목. 개별 회사(500주)보다 훨씬
+ * 많은 주식수로 둬서 웬만큼 사고팔아도 시세가 잘 안 흔들리는 "안전하게 돈을
+ * 묻어 둘 곳" 역할을 한다. 창업자 몫·점진 상장 같은 개념이 없어 처음부터
+ * 전량 시장에 풀려 있다. 시간이 지나며 완만히 우상향하고(진짜 성장하는 대형
+ * 경제를 흉내낸다) mood 진폭도 개별 회사 주식보다 훨씬 좁게 잡아서 "우량주다운"
+ * 안정감을 준다. 그래도 금융위기·랠리는 절반 강도로 걸쳐서 완전한 무풍지대는
+ * 아니게 한다 — 안 그러면 무조건 여기에만 돈을 넣는 게 정답이 되어 버린다.
+ */
+// nvidia 는 반도체 수요와 실제로 이어져 있다 — 이 주가가 뛰면(AI·GPU 붐을 흉내낸다)
+// 반도체 수요가 따라 늘어난다. updateBaselines() 의 하이테크 처리 참고.
+const BLUE_CHIPS = [
+  { id: 'blue1', name: '한국중공업' },
+  { id: 'nvidia', name: '엔비디아' },
+];
+const BLUE_CHIP_SHARES = 20000; // 개별 회사(2000주)의 10배 — 처음부터 전량 상장
+// 1주 체결 충격도 그만큼 작다 — 큰돈을 넣어도 시세가 잘 안 밀리는 게 우량주의 핵심이다
+const BLUE_CHIP_IMPACT = 0.0001;
+const BLUE_CHIP_ACTIVITY = 40; // 외인·기관이 초당 굴리는 물량
+// 시작가 = 시작 자금의 이 비율. 주당 0.5원 같은 잔돈이 아니라 사람이 셈하기 좋은
+// 단위여야 하고, 시가총액(주식수 × 시작가)이 판 전체 자금을 훨씬 웃돌아야
+// "돈을 얼마든지 묻어 둘 수 있는 곳" 이 된다.
+const BLUE_CHIP_START_PRICE = 0.01; // 시작 자금 1000 이면 주당 10원 (시총 20만)
+// 기준가가 초당 이만큼 복리로 우상향 (10분에 약 105%). 채권(10분 82%)보다
+// 조금 나은 대신 시세가 흔들리는 위험을 진다 — 이 차이가 돈이 흘러들 이유가 된다.
+const BLUE_CHIP_GROWTH = 0.0012;
+const BLUE_CHIP_THETA = 0.15; // mood 가 제자리(1)로 돌아오려는 힘 — 개별 주식(0.08)보다 세다
+const BLUE_CHIP_SIGMA = 0.12; // mood 흔들리는 폭 — 개별 주식(0.28)의 절반 이하
+const BLUE_CHIP_MOOD_RANGE = [0.7, 1.3]; // 개별 주식(0.5~1.7)보다 좁은 변동 범위
+
 // 배당은 주가에 비례해 초당 지급된다. 0.002 = 주가의 0.2%/초.
 // 주가가 오를수록 배당도 커지고, 회사 현금에서 빠져나가므로 남에게 지분을
 // 많이 내준 회사는 그만큼 성장이 느려진다. (되사면 그만큼 부담이 사라진다)
@@ -56,14 +90,22 @@ const TAKEOVER_CUT = 0.25; // 경영권 보유자가 가져가는 매출 비율
  * 사실상 공짜 시드머니로 굴러갔다. 배당(0.04%/초)보다 확실히 비싸고, 총자산의 절반이
  * 아니라 1/3 정도만 빌리게 좁혀서 — 갚을 여력을 넘어서는 확장은 진짜 손해가 나게 한다.
  */
-const LOAN_INTEREST = 0.0015; // 대출 이자 (초당 0.15% — 10분이면 약 90%)
+const LOAN_INTEREST = 0.003; // 대출 기준 이자 (초당 0.3% — 10분이면 약 3.7배)
 const LOAN_MIN_LIMIT = 400; // 자산이 없어도 이만큼은 빌릴 수 있다
 const LOAN_RATIO = 0.35; // 총자산 대비 최대 대출 비율
-// 채권 이자 (초당 0.025% — 10분이면 약 15%). 대출 이자보다 낮게 잡아야
-// 빌려서 채권을 사는 것만으로 차익이 나는 일이 없다. 사업·투자보다는 낮은
-// 수익률로 묶어 두어, 여윳돈을 놀리지 않게 하는 안전 자산 역할만 하게 한다.
-const BOND_INTEREST = 0.00025;
-const MAX_SHORT = 200; // 회사당 공매도 가능 주식 수
+// 채권 기준 이자 (초당 0.1% — 10분이면 약 82%). 대출 이자보다 항상 낮게 유지해야
+// 빌려서 채권을 사는 것만으로 차익이 나는 일이 없다 — rateMult 를 둘에 똑같이
+// 곱하므로 금리가 오르내려도 이 관계는 안 깨진다.
+const BOND_INTEREST = 0.001;
+/*
+ * 금리는 고정이 아니라 계속 움직인다. 대출과 채권에 같은 배수(rateMult)를
+ * 곱해서, 금리가 높은 국면엔 빚이 무섭고 채권이 매력적이고, 낮은 국면엔
+ * 반대가 되게 한다 — "언제 빌리고 언제 묻어 두느냐"가 판단거리가 된다.
+ */
+const RATE_THETA = 0.05; // 제자리(1)로 돌아오려는 힘
+const RATE_SIGMA = 0.22; // 흔들리는 폭
+const RATE_RANGE = [0.4, 2.2]; // 기준 금리의 이 배수 사이를 오간다
+const MAX_SHORT = 800; // 회사당 공매도 가능 주식 수 (총주식수의 40%)
 const SHORT_MARGIN = 0.5; // 공매도할 때 필요한 증거금 (거래대금 대비)
 const RESALE_RATE = 0.7; // 건물을 은행에 되팔 때 돌려받는 비율
 // 건물 유지비 — 초당 건축비의 0.25%. 지어만 두고 안 돌리면 돈이 샌다.
@@ -440,7 +482,25 @@ class Game {
       };
     }
 
+    // 우량주 — 특정 회사에 안 묶인 대형 종목. 처음부터 전량 상장돼 있다.
+    this.blueChips = {};
+    for (const bc of BLUE_CHIPS) {
+      const start = Math.max(1, Math.round(settings.startCash * BLUE_CHIP_START_PRICE));
+      this.blueChips[bc.id] = {
+        name: bc.name,
+        price: start,
+        baseline: start,
+        float: BLUE_CHIP_SHARES, // 처음부터 전량 상장이라 unissued 가 없다
+        npc: 0,
+        mood: 1,
+        turnover: 0,
+        volume: 0,
+        _lots: 0,
+      };
+    }
+
     this.event = null;
+    this.rateMult = 1; // 금리 국면 — 대출·채권 이자에 함께 곱해진다
     this.marketMult = 1; // market-crash/market-rally 가 지속되는 동안 전체 주가 목표에 곱해진다
     this._nextEventAt = EVENT_FIRST;
     this._incomeTimer = 0;
@@ -629,6 +689,16 @@ class Game {
   }
 
   /* ---------------------------------------------------------------- 대출 */
+
+  /** 지금 국면의 대출 이자 (초당) */
+  loanRate() {
+    return LOAN_INTEREST * this.rateMult;
+  }
+
+  /** 지금 국면의 채권 이자 (초당) — 항상 대출 이자보다 낮다 */
+  bondRate() {
+    return BOND_INTEREST * this.rateMult;
+  }
 
   /**
    * 총자산 대비 한도 — 지금 더 빌릴 수 있는 금액.
@@ -1098,6 +1168,59 @@ class Game {
     return { ok: false, error: '잘못된 요청입니다.' };
   }
 
+  /**
+   * 우량주 매매. 경영권·배당이 없고 물량이 많아 시세가 잘 안 밀린다 —
+   * 큰돈을 안전하게 묻어 두는 용도. 보유분은 shares 에 같은 방식으로 쌓인다.
+   */
+  blueChipTrade(pid, { chip, qty, side }) {
+    if (this.ended) return { ok: false, error: '게임이 끝났습니다.' };
+    const p = this.player(pid);
+    const s = this.blueChips[chip];
+    qty = Math.floor(Number(qty) || 0);
+    if (!p || !s) return { ok: false, error: '잘못된 요청입니다.' };
+    if (qty < 1 || qty > BLUE_CHIP_SHARES) return { ok: false, error: '수량이 잘못되었습니다.' };
+
+    let price = s.price;
+    let total = 0;
+
+    if (side === 'buy') {
+      const avail = s.float + s.npc;
+      if (avail < qty) return { ok: false, error: `살 수 있는 물량이 ${avail}주뿐입니다.` };
+      for (let i = 0; i < qty; i++) {
+        total += price * (1 + STOCK_SPREAD);
+        price = price * (1 + BLUE_CHIP_IMPACT);
+      }
+      total = Math.round(total);
+      if (p.cash < total) return { ok: false, error: `현금이 부족합니다. (필요 ${total})` };
+      p.cash -= total;
+      const fromFloat = Math.min(s.float, qty);
+      s.float -= fromFloat;
+      s.npc -= qty - fromFloat;
+      p.shares[chip] = (p.shares[chip] || 0) + qty;
+      s.price = Math.round(price * 100) / 100;
+      s.turnover += qty;
+      this.pushLog(`${p.name} 님이 ${s.name} ${qty}주 매수 (-${total})`);
+      return { ok: true, total };
+    }
+    if (side === 'sell') {
+      if ((p.shares[chip] || 0) < qty) return { ok: false, error: '보유 주식이 부족합니다.' };
+      for (let i = 0; i < qty; i++) {
+        price = Math.max(0.01, price * (1 - BLUE_CHIP_IMPACT));
+        total += price * (1 - STOCK_SPREAD);
+      }
+      total = Math.round(total);
+      p.cash += total;
+      p.shares[chip] -= qty;
+      if (p.shares[chip] === 0) delete p.shares[chip];
+      s.float += qty;
+      s.price = Math.round(price * 100) / 100;
+      s.turnover += qty;
+      this.pushLog(`${p.name} 님이 ${s.name} ${qty}주 매도 (+${total})`);
+      return { ok: true, total };
+    }
+    return { ok: false, error: '잘못된 요청입니다.' };
+  }
+
   /** 과반(51주 이상)을 모은 다른 플레이어가 있으면 경영권이 넘어간다. */
   controllerOf(companyId) {
     for (const p of this.players) {
@@ -1216,7 +1339,12 @@ class Game {
         // 기준가 자체가 계속 랜덤하게 흔들리게 한다 (원자재보다 변동폭이 크다).
         m.vol += (1 - m.vol) * HITECH_VOL_THETA * dt + (Math.random() - 0.5) * HITECH_VOL_SIGMA * Math.sqrt(dt);
         m.vol = Math.min(HITECH_VOL_RANGE[1], Math.max(HITECH_VOL_RANGE[0], m.vol));
-        const target = origin * m.vol;
+        // 반도체는 엔비디아 주가에 실제 수요가 걸려 있다 — 엔비디아가 제값보다
+        // 뛸수록(AI·GPU 붐) 반도체 수요도 그만큼 따라 늘어난다. 엔비디아가 가라앉으면
+        // 반대로 반도체도 눌린다 — 공급만 있고 수요가 없는 상태를 벗어나게 한다.
+        const nv = key === 'semi' ? this.blueChips.nvidia : null;
+        const demandDriver = nv ? nv.price / nv.baseline : 1;
+        const target = origin * m.vol * demandDriver;
         m.baseline += (target - m.baseline) * 0.05 * dt;
       }
       // 사건 배수는 따로 곱해 둔다 (기준가가 흐르는 중에도 사건이 겹칠 수 있다).
@@ -1422,6 +1550,51 @@ class Game {
     }
   }
 
+  /**
+   * 우량주 — 회사 실적이 아니라 자기 기준가(완만히 우상향)와 좁은 mood 로만 움직인다.
+   * 주식수가 많아 체결 충격이 작으므로 큰돈을 넣어도 시세가 잘 안 밀린다.
+   * 금융위기·랠리는 절반 강도로만 걸린다 — 완전한 무풍지대면 여기에만 넣는 게 정답이 된다.
+   */
+  tradeBlueChips(dt) {
+    for (const s of Object.values(this.blueChips)) {
+      s.baseline *= Math.pow(1 + BLUE_CHIP_GROWTH, dt);
+
+      s.mood += (1 - s.mood) * BLUE_CHIP_THETA * dt + (Math.random() - 0.5) * BLUE_CHIP_SIGMA * Math.sqrt(dt);
+      s.mood = Math.min(BLUE_CHIP_MOOD_RANGE[1], Math.max(BLUE_CHIP_MOOD_RANGE[0], s.mood));
+
+      // 시장 전체 사건은 절반만 반영한다 (1 에서 절반만큼만 벌어지게)
+      const eventPull = 1 + (this.marketMult - 1) * 0.5;
+      const target = s.baseline * s.mood * eventPull;
+      const gap = (target - s.price) / s.price;
+
+      s._lots += BLUE_CHIP_ACTIVITY * dt * (0.4 + Math.random() * 1.2);
+      const lots = Math.floor(s._lots);
+      if (lots > 0) {
+        s._lots -= lots;
+        const buyBias = 0.5 + Math.max(-0.4, Math.min(0.4, gap * 2));
+        if (Math.random() < buyBias) {
+          const n = Math.min(lots, s.float);
+          if (n > 0) {
+            s.float -= n;
+            s.npc += n;
+            s.price *= Math.pow(1 + BLUE_CHIP_IMPACT, n);
+            s.turnover += n;
+          }
+        } else {
+          const n = Math.min(lots, s.npc);
+          if (n > 0) {
+            s.npc -= n;
+            s.float += n;
+            s.price *= Math.pow(1 - BLUE_CHIP_IMPACT, n);
+            s.turnover += n;
+          }
+        }
+      }
+
+      s.price = Math.round(Math.max(0.05, s.price + (target - s.price) * 0.08 * dt) * 100) / 100;
+    }
+  }
+
   /** 1개 체결마다 시세가 밀리는 비율 (하이테크는 크게) */
   marketImpact(key) {
     return HITECH[key] ? HITECH_IMPACT : MAT_IMPACT;
@@ -1594,10 +1767,14 @@ class Game {
       owner._incomeAccum -= fee;
     }
 
-    // 5) 대출 이자 — 현금이 모자라면 원금에 붙는다 (복리로 불어난다)
+    // 5) 금리 국면이 흐른다 — 대출·채권에 같은 배수로 걸리므로 둘의 상하 관계는 유지된다
+    this.rateMult += (1 - this.rateMult) * RATE_THETA * dt + (Math.random() - 0.5) * RATE_SIGMA * Math.sqrt(dt);
+    this.rateMult = Math.min(RATE_RANGE[1], Math.max(RATE_RANGE[0], this.rateMult));
+
+    // 5-a) 대출 이자 — 현금이 모자라면 원금에 붙는다 (복리로 불어난다)
     for (const p of this.players) {
       if (p.debt <= 0) continue;
-      const interest = p.debt * LOAN_INTEREST * dt;
+      const interest = p.debt * this.loanRate() * dt;
       const fromCash = Math.min(interest, Math.max(0, p.cash));
       p.cash -= fromCash;
       p.debt += interest - fromCash;
@@ -1607,7 +1784,7 @@ class Game {
     // 5-b) 채권 이자 — 대출과 반대로 원금에 붙어 스스로 불어난다 (복리)
     for (const p of this.players) {
       if (p.bonds <= 0) continue;
-      const interest = p.bonds * BOND_INTEREST * dt;
+      const interest = p.bonds * this.bondRate() * dt;
       p.bonds += interest;
       p._incomeAccum += interest;
     }
@@ -1615,6 +1792,7 @@ class Game {
     // 6) 주식 — 미발행 물량이 조금씩 상장되고, 외부 투자자가 거래하며 주가가 오르내린다
     this.releaseShares(dt);
     this.tradeNpc(dt);
+    this.tradeBlueChips(dt);
 
     // 7) 사건 — 원자재 시세와 도시 수요를 흔든다
     if (this.event) {
@@ -1628,7 +1806,7 @@ class Game {
     if (this._incomeTimer >= 1) {
       this.runAutoBuy();
       // 최근 1초 거래량을 갈무리해 화면에 보여준다
-      for (const s of Object.values(this.stocks)) {
+      for (const s of [...Object.values(this.stocks), ...Object.values(this.blueChips)]) {
         s.volume = Math.round(s.turnover / this._incomeTimer);
         s.turnover = 0;
       }
@@ -1720,7 +1898,9 @@ class Game {
       if (this.stocks[cid]) v -= this.stocks[cid].price * pos.shares;
     }
     for (const [cid, n] of Object.entries(p.shares)) {
-      if (n && this.stocks[cid]) v += this.stocks[cid].price * n;
+      if (!n) continue;
+      const s = this.stocks[cid] || this.blueChips[cid]; // 우량주도 같은 방식으로 잡힌다
+      if (s) v += s.price * n;
     }
     return Math.round(v);
   }
@@ -1735,6 +1915,10 @@ class Game {
       elapsed: Math.round(this.elapsed * 10) / 10,
       rentalSupply: this.rentalSupply(),
       rentalDemand: Math.round(this.rentalDemand() * 100) / 100,
+      // 금리는 매 틱 움직이므로 상수가 아니라 상태로 보낸다
+      loanRate: this.loanRate(),
+      bondRate: this.bondRate(),
+      rateMult: Math.round(this.rateMult * 100) / 100,
       depotSupply: this.depotSupply(),
       freightDemand: Math.round(this.freightDemand() * 100) / 100,
       duration: this.settings.duration,
@@ -1744,6 +1928,7 @@ class Game {
       cities: this.cities,
       market: this.market,
       stocks: this.stocks,
+      blueChips: this.blueChips,
       event: this.event,
       players: this.players.map((p) => {
         const inv = {};
@@ -1788,6 +1973,7 @@ class Game {
         tileTypes: TILE_TYPES,
         buildings: BUILDINGS,
         totalShares: TOTAL_SHARES,
+        blueChipShares: BLUE_CHIP_SHARES,
         takeoverShares: TAKEOVER_SHARES,
         dividendYield: DIVIDEND_YIELD,
         takeoverCut: TAKEOVER_CUT,
@@ -1832,6 +2018,8 @@ module.exports = {
   RESEARCH_MAX,
   MAX_SHORT,
   NPC_MAX_SHORT,
+  BLUE_CHIPS,
+  BLUE_CHIP_SHARES,
   RESALE_RATE,
   AUTO_BUY_RATE,
   AUTO_BUY_RESERVE,

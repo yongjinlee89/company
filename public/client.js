@@ -258,21 +258,31 @@ function renderGame() {
   renderResult();
 }
 
-/** 진행 중인 사건을 화면 위에 띄운다 */
+// 사건 배너를 띄워 두는 시간 (초). 남은 시간을 세는 대신, 터진 순간에만 알린다.
+const EVENT_NOTICE_SEC = 6;
+let shownEvent = null; // 지금 배너로 알린 사건 (until 값으로 구분한다)
+
+/** 사건이 터지면 잠깐 알림으로 띄운다 (카운트다운 없이) */
 function renderEvent() {
   const banner = $('#event-banner');
   const e = S.game.event;
   if (!e || S.game.ended) {
     banner.classList.add('hidden');
+    if (!e) shownEvent = null;
     return;
   }
-  banner.classList.remove('hidden');
-  const left = Math.max(0, Math.round(e.until - S.game.elapsed));
-  banner.textContent = `${e.icon} ${e.text} (${left}초 남음)`;
-  banner.classList.toggle(
-    'bad',
-    e.kind === 'mat-up' || e.kind === 'city-slump' || e.kind === 'market-crash' || e.kind === 'company-slump'
-  );
+  // 새 사건이면 시작 시각을 기억해 둔다
+  if (shownEvent !== e.until) {
+    shownEvent = e.until;
+    banner.textContent = `${e.icon} ${e.text}`;
+    banner.classList.toggle(
+      'bad',
+      e.kind === 'mat-up' || e.kind === 'city-slump' || e.kind === 'market-crash' || e.kind === 'company-slump'
+    );
+    banner.dataset.since = S.game.elapsed;
+  }
+  const shownFor = S.game.elapsed - Number(banner.dataset.since || 0);
+  banner.classList.toggle('hidden', shownFor > EVENT_NOTICE_SEC);
 }
 
 /**
@@ -1120,6 +1130,9 @@ function samplePrices() {
   for (const [key, m] of Object.entries(S.game.market)) {
     pushSample('mat:' + key, m.price);
   }
+  for (const [id, s] of Object.entries(S.game.blueChips || {})) {
+    pushSample('blue:' + id, s.price);
+  }
 }
 
 /** 시세 차트용 캔버스를 만든다 */
@@ -1311,6 +1324,67 @@ function renderStocks() {
       }
       box.appendChild(row);
     }
+
+    // 우량주 — 경영권·배당이 없고 물량이 많아 시세가 잘 안 밀린다.
+    // 큰돈을 안전하게 묻어 두는 곳이라 개별 회사 주식과 따로 묶어 보여준다.
+    box.appendChild(
+      el(
+        'p',
+        'tab-hint',
+        `🏛️ 우량주 — 종목당 ${fmt(g.constants.blueChipShares)}주로 전량 상장. ` +
+          `경영권·배당은 없지만 시세가 잘 안 흔들린다. 엔비디아가 오르면 반도체 수요도 는다.`
+      )
+    );
+    for (const [id, chip] of Object.entries(g.blueChips)) {
+      const row = el('div', 'stock-row blue-chip');
+
+      const head = el('div', 'trade-info');
+      head.appendChild(el('b', '', chip.name));
+      const price = el('span', 'stock-price');
+      const float = el('span', 'small');
+      const spark = makeSpark('최근 1분 주가');
+      head.appendChild(price);
+      head.appendChild(float);
+      head.appendChild(spark);
+      row.appendChild(head);
+
+      const meta = el('div', 'small stock-meta');
+      const held = el('span', 'holders');
+      meta.appendChild(held);
+      row.appendChild(meta);
+
+      live.push(() => {
+        const gg = S.game;
+        const s = gg.blueChips[id];
+        if (!s) return;
+        const mine = me();
+        const n = mine ? mine.shares[id] || 0 : 0;
+        price.textContent = `${fmt2(s.price)}/주`;
+        float.textContent = `물량 ${fmt(s.float + s.npc)} · 거래 ${fmt(s.volume || 0)}/초`;
+        held.textContent = n > 0 ? `내 ${fmt(n)}주 · 평가 ${fmt(s.price * n)}` : '보유 없음';
+        held.classList.toggle('up', n > 0);
+        drawSpark(spark, priceHistory['blue:' + id]);
+      });
+
+      if (my && !g.ended) {
+        const controls = el('div', 'trade-controls');
+        const qty = el('input');
+        qty.type = 'number';
+        qty.min = '1';
+        qty.placeholder = '주';
+        keepInput(qty, 'bc-' + id);
+        const amount = () => keptValue('bc-' + id, 1);
+        const buy = el('button', 'buy', '매수');
+        const sell = el('button', 'sell', '매도');
+        buy.addEventListener('click', () => emit('blueChipTrade', { chip: id, qty: amount(), side: 'buy' }));
+        sell.addEventListener('click', () => emit('blueChipTrade', { chip: id, qty: amount(), side: 'sell' }));
+        controls.appendChild(qty);
+        controls.appendChild(buy);
+        controls.appendChild(sell);
+        row.appendChild(controls);
+      }
+      box.appendChild(row);
+    }
   });
 }
 
@@ -1402,12 +1476,14 @@ function renderCompany() {
       live.push(() => {
         const my = me();
         if (!my) return;
-        const C = S.game.constants;
-        const rate = Math.round(C.loanInterest * 10000) / 100;
+        // 금리는 계속 움직이므로 상수가 아니라 지금 상태값을 쓴다
+        const live = S.game.loanRate;
+        const rate = Math.round(live * 10000) / 100;
+        const phase = S.game.rateMult >= 1.25 ? ' 🔺고금리' : S.game.rateMult <= 0.8 ? ' 🔻저금리' : '';
         info.innerHTML = '';
         info.appendChild(el('span', my.debt > 0 ? 'down' : '', `빚 ${fmt(my.debt)}`));
         info.appendChild(
-          el('span', '', ` · 이자 ${rate}%/초 (-${fmt1(my.debt * C.loanInterest)}/초) · 한도 ${fmt(my.credit)}`)
+          el('span', '', ` · 이자 ${rate}%/초${phase} (-${fmt1(my.debt * live)}/초) · 한도 ${fmt(my.credit)}`)
         );
         // 한도·현금·빚에 따라 못 누르는 버튼은 잠근다
         for (const { b, amt } of borrowBtns) b.disabled = my.credit < amt;
@@ -1455,11 +1531,13 @@ function renderCompany() {
       live.push(() => {
         const my = me();
         if (!my) return;
-        const C = S.game.constants;
-        const rate = Math.round(C.bondInterest * 10000) / 100;
+        // 금리는 계속 움직이므로 상수가 아니라 지금 상태값을 쓴다
+        const live = S.game.bondRate;
+        const rate = Math.round(live * 10000) / 100;
+        const phase = S.game.rateMult >= 1.25 ? ' 🔺고금리' : S.game.rateMult <= 0.8 ? ' 🔻저금리' : '';
         info.innerHTML = '';
         info.appendChild(el('span', my.bonds > 0 ? 'up' : '', `보유 ${fmt(my.bonds)}`));
-        info.appendChild(el('span', '', ` · 이자 ${rate}%/초 (+${fmt1(my.bonds * C.bondInterest)}/초)`));
+        info.appendChild(el('span', '', ` · 이자 ${rate}%/초${phase} (+${fmt1(my.bonds * live)}/초)`));
         for (const { b, amt } of buyBtns) b.disabled = my.cash < amt;
         for (const { b, amt } of redeemBtns) b.disabled = my.bonds < amt;
         allRedeemBtn.disabled = my.bonds < 1;

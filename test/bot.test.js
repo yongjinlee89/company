@@ -53,9 +53,6 @@ function countBuildings(game, id) {
 
 /* ---------------- 봇이 배송 노선을 잡고 돈을 번다 ---------------- */
 {
-  // 순자산이 이제 "내가 들고 있는 주식의 시세"로 매겨져서(자사주 포함), 몇십 초
-  // 단위로는 mood 잡음이 실제 성장분을 가릴 수 있다 — 실제 게임 최단 길이(5분)에
-  // 맞춰 돌려야 신호가 잡음을 확실히 이긴다.
   const g = newGame(1000, 400);
   const bot = g.player('p0');
   const idle = g.player('p1'); // 아무것도 안 하는 상대
@@ -72,9 +69,18 @@ function countBuildings(game, id) {
   assert.ok(factories.every((f) => f.t.route !== null), '모든 공장에 배송 노선이 지정된다');
 
   assert.ok(bot.incomePerSec > 0, `초당 수익이 나야 한다 (${bot.incomePerSec})`);
-  assert.ok(g.netWorth(bot) > g.netWorth(idle), '가만히 있는 상대보다 잘해야 한다');
+  // "얼마나 잘 굴렸나" 는 회사 가치로 본다. 순자산은 창업자 지분(10%)의 시세로만
+  // 매겨져서 mood 잡음(±30%)이 5분치 성장분을 통째로 덮는 판이 종종 나온다 —
+  // 봇 성능이 아니라 주가 운을 재게 되므로 여기선 본업 가치로 판정한다.
+  assert.ok(
+    g.operatingWorth(bot) > g.operatingWorth(idle),
+    `가만히 있는 상대보다 회사를 잘 키워야 한다 (${Math.round(g.operatingWorth(bot))} vs ${Math.round(
+      g.operatingWorth(idle)
+    )})`
+  );
   console.log(
-    `✓ 봇 수익 창출 (5분 후 순자산 ${g.netWorth(bot)}, ${bot.incomePerSec}/초 · 무행동 ${g.netWorth(idle)})`
+    `✓ 봇 수익 창출 (5분 후 회사 가치 ${Math.round(g.operatingWorth(bot))}, ${bot.incomePerSec}/초 · ` +
+      `무행동 ${Math.round(g.operatingWorth(idle))})`
   );
 }
 
