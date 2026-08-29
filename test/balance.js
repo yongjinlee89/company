@@ -80,9 +80,10 @@ function expand(g, id, plan) {
   };
 
   if (worst && worst.ratio < 1) return tryBuild(worst.kind);
-  if (tryBuild('factory')) return true;
-  for (const kind of plan.sources) if (tryBuild(kind)) return true;
-  return false;
+  // 재료가 남아도는데도 공장 자리가 없으면 아무것도 안 짓는다.
+  // (예전엔 여기서 생산기지를 더 지어서, 평지가 동난 뒤 쓰지도 않을 농장만
+  //  30채씩 쌓였다 — 전략이 아니라 벤치마크가 만든 착시였다)
+  return tryBuild('factory');
 }
 
 /** 도시를 골고루 나눠 배송해 한 도시 수요만 무너뜨리지 않게 한다 */
@@ -160,3 +161,37 @@ for (const r of rows) {
 }
 console.log(`\n  1위 대비 최하위 비율: ${(rows[rows.length - 1].worth / top).toFixed(2)}`);
 console.log(`  반도체 종료 시세: ${Math.round(semiPrice / RUNS)} (기준 ${HITECH.semi.base})`);
+
+/*
+ * 왜 그런 결과가 나왔는지 보려면 마지막 한 판의 시장 상태를 들여다본다.
+ * (수치가 이상할 때 "수요가 말라서" 인지 "시세가 무너져서" 인지 구분하는 용도)
+ */
+if (process.env.DETAIL) {
+  const g = play();
+  console.log('\n--- 마지막 판 시장 상태 ---');
+  console.log('  도시 수요 (1.0 정상 / 0.35 바닥)');
+  for (const c of g.cities) {
+    console.log(`    ${c.name} 기계 ${c.demand.machine.toFixed(2)} · 식품 ${c.demand.food.toFixed(2)}`);
+  }
+  console.log(`  임대 수요배수 ${g.rentalDemand().toFixed(2)} · 공급 ${g.rentalSupply()}`);
+  console.log(`  화물 수요 ${g.freightDemand().toFixed(2)} · 물류 공급 ${g.depotSupply()}`);
+  console.log(`  반도체 시세 ${g.market.semi.price.toFixed(1)} / 기준 ${g.market.semi.base.toFixed(1)}`);
+  const freePlain = g.map.tiles.filter((t) => t.t === 'plain' && !t.owner).length;
+  console.log(`  남은 빈 평지 ${freePlain}칸 (공장·임대·운송이 모두 여기를 쓴다)`);
+  console.log('  전략별 세부');
+  for (const name of Object.keys(STRATEGIES)) {
+    const p = g.player(name);
+    const counts = {};
+    for (const t of g.map.tiles) {
+      if (t.owner === name && t.b) counts[t.b] = (counts[t.b] || 0) + (t.level || 1);
+    }
+    const comp = Object.entries(counts)
+      .map(([k, n]) => `${BUILDINGS[k].name}${n}`)
+      .join(' ');
+    console.log(
+      `    ${name.padEnd(4)} 순자산 ${String(g.netWorth(p)).padStart(7)} · 수익 ${p.incomePerSec
+        .toFixed(1)
+        .padStart(7)}/초 · 법인세 ${String((g.taxRate(p) * 100).toFixed(0)).padStart(2)}% · ${comp}`
+    );
+  }
+}
