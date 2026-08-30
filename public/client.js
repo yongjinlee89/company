@@ -1226,9 +1226,11 @@ function renderStocks() {
       // 2줄: 내 배당 · 보유자 (공매도 잔고가 있으면 뒤에 붙는다)
       const meta = el('div', 'small stock-meta');
       const div = el('span', 'dividend');
+      const myRet = el('span', 'my-return');
       const holders = el('span', 'holders');
       const shortInfo = el('span', 'short-row hidden');
       meta.appendChild(div);
+      meta.appendChild(myRet);
       meta.appendChild(holders);
       meta.appendChild(shortInfo);
       row.appendChild(meta);
@@ -1259,6 +1261,21 @@ function renderStocks() {
           div.textContent = n > 0 ? `내 ${n}주 배당 +${fmt1(s.price * n * y)}/초` : '보유 없음';
           div.classList.toggle('up', n > 0);
           div.classList.remove('down');
+        }
+
+        // 내가 산 값(평균 단가) 대비 지금 얼마나 벌고 있는지. 배당과 달리
+        // "지금 팔면 남는가" 를 보여 주므로 매도 판단의 기준이 된다.
+        const held = mine ? mine.shares[p.id] || 0 : 0;
+        const avg = mine && mine.avgCost ? mine.avgCost[p.id] || 0 : 0;
+        if (held > 0 && avg > 0) {
+          const pct = (s.price / avg - 1) * 100;
+          myRet.textContent = ` · 수익률 ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
+          myRet.title = `평균 ${fmt2(avg)}에 산 ${fmt(held)}주 · 평가 ${fmt(s.price * held)}`;
+          myRet.classList.toggle('up', pct > 0.05);
+          myRet.classList.toggle('down', pct < -0.05);
+        } else {
+          myRet.textContent = '';
+          myRet.classList.remove('up', 'down');
         }
 
         // 6인이면 보유자 목록이 줄바꿈되어 칸이 두꺼워진다.
@@ -1353,7 +1370,9 @@ function renderStocks() {
 
       const meta = el('div', 'small stock-meta');
       const held = el('span', 'holders');
+      const myRet = el('span', 'my-return');
       meta.appendChild(held);
+      meta.appendChild(myRet);
       row.appendChild(meta);
 
       live.push(() => {
@@ -1371,12 +1390,22 @@ function renderStocks() {
         ret.className = 'chip-return ' + (gain > 0.005 ? 'up' : gain < -0.005 ? 'down' : '');
         ret.title = `개장가 ${fmt2(s.start)} 대비`;
 
-        // 채권 이자처럼 "가만히 두면 초당 몇 %" 도 같이 보여 준다
-        const perSec = (gg.constants.blueChipGrowth || 0) * 100;
-        held.textContent =
-          (n > 0 ? `내 ${fmt(n)}주 · 평가 ${fmt(s.price * n)}` : '보유 없음') +
-          ` · 성장 ${perSec.toFixed(2)}%/초`;
+        // 내 몫 — 평가금액과, 내가 산 값 대비 수익률. 우량주는 배당이 없어서
+        // 여기서 버는 돈은 오직 이 차익뿐이라 제일 중요한 숫자다.
+        const avg = mine && mine.avgCost ? mine.avgCost[id] || 0 : 0;
+        held.textContent = n > 0 ? `내 ${fmt(n)}주 · 평가 ${fmt(s.price * n)}` : '보유 없음';
         held.classList.toggle('up', n > 0);
+        if (n > 0 && avg > 0) {
+          const pnl = (s.price - avg) * n;
+          const pct = (s.price / avg - 1) * 100;
+          myRet.textContent = ` · 수익률 ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% (${pnl >= 0 ? '+' : ''}${fmt(pnl)})`;
+          myRet.title = `평균 ${fmt2(avg)}에 매수`;
+          myRet.classList.toggle('up', pct > 0.05);
+          myRet.classList.toggle('down', pct < -0.05);
+        } else {
+          myRet.textContent = '';
+          myRet.classList.remove('up', 'down');
+        }
         drawSpark(spark, priceHistory['blue:' + id]);
       });
 

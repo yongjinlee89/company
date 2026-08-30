@@ -670,9 +670,23 @@ input:focus, select:focus {
 }
 
 .stock-meta .dividend,
+.stock-meta .my-return,
 .stock-meta .short-row {
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+/* 내 평균 단가 대비 수익률 */
+.my-return {
+  font-variant-numeric: tabular-nums;
+}
+
+.my-return.up {
+  color: #4ade80;
+}
+
+.my-return.down {
+  color: #ff8080;
 }
 
 .stock-meta .holders {
@@ -681,6 +695,12 @@ input:focus, select:focus {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 우량주 줄에는 보유자 목록이 없으므로 남는 칸으로 늘리지 않는다 —
+   안 그러면 평가금액과 수익률이 줄 양끝으로 갈라져 붙여 읽기 어렵다 */
+.blue-chip .stock-meta .holders {
+  flex: 0 1 auto;
 }
 
 .stock-row .trade-info {
