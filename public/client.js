@@ -1265,13 +1265,14 @@ function renderStocks() {
 
         // 내가 산 값(평균 단가) 대비 지금 얼마나 벌고 있는지. 배당과 달리
         // "지금 팔면 남는가" 를 보여 주므로 매도 판단의 기준이 된다.
-        const held = mine ? mine.shares[p.id] || 0 : 0;
-        const avg = mine && mine.avgCost ? mine.avgCost[p.id] || 0 : 0;
-        if (held > 0 && avg > 0) {
-          const pct = (s.price / avg - 1) * 100;
-          myRet.textContent = ` · 수익률 ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
-          // 창업자 몫은 원가에 안 잡히므로 물량을 같이 적지 않는다 (산 주식만의 값)
-          myRet.title = `평균 ${fmt2(avg)}에 매수`;
+        // 수익 금액은 산 물량(c.qty)으로만 잰다 — 창업자 몫은 원가가 없다.
+        const c = mine && mine.cost ? mine.cost[p.id] : null;
+        if (c && c.avg > 0) {
+          const pct = (s.price / c.avg - 1) * 100;
+          const pnl = (s.price - c.avg) * c.qty;
+          myRet.textContent =
+            ` · 수익률 ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% (${pnl >= 0 ? '+' : ''}${fmt(pnl)})`;
+          myRet.title = `평균 ${fmt2(c.avg)}에 산 ${fmt(c.qty)}주 기준`;
           myRet.classList.toggle('up', pct > 0.05);
           myRet.classList.toggle('down', pct < -0.05);
         } else {
@@ -1384,14 +1385,15 @@ function renderStocks() {
 
         // 내 몫 — 평가금액과, 내가 산 값 대비 수익률. 우량주는 배당이 없어서
         // 여기서 버는 돈은 오직 이 차익뿐이라 제일 중요한 숫자다.
-        const avg = mine && mine.avgCost ? mine.avgCost[id] || 0 : 0;
+        const c = mine && mine.cost ? mine.cost[id] : null;
         held.textContent = n > 0 ? `내 ${fmt(n)}주 · 평가 ${fmt(s.price * n)}` : '보유 없음';
         held.classList.toggle('up', n > 0);
-        if (n > 0 && avg > 0) {
-          const pnl = (s.price - avg) * n;
-          const pct = (s.price / avg - 1) * 100;
-          myRet.textContent = ` · 수익률 ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% (${pnl >= 0 ? '+' : ''}${fmt(pnl)})`;
-          myRet.title = `평균 ${fmt2(avg)}에 매수`;
+        if (c && c.avg > 0) {
+          const pnl = (s.price - c.avg) * c.qty;
+          const pct = (s.price / c.avg - 1) * 100;
+          myRet.textContent =
+            ` · 수익률 ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% (${pnl >= 0 ? '+' : ''}${fmt(pnl)})`;
+          myRet.title = `평균 ${fmt2(c.avg)}에 매수`;
           myRet.classList.toggle('up', pct > 0.05);
           myRet.classList.toggle('down', pct < -0.05);
         } else {

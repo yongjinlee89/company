@@ -2170,12 +2170,12 @@ class Game {
         for (const [cid, pos] of Object.entries(p.shorts)) {
           shorts[cid] = { shares: pos.shares, avg: Game.round2(pos.proceeds / pos.shares) };
         }
-        // 화면에서 쓰는 건 평균 단가뿐이라 원가 총액 대신 나눠서 보낸다.
-        // 산 적 없는 주식(창업자 몫)만 들고 있으면 아예 안 실린다 — 그런 주식엔
-        // 보여 줄 "내 수익률" 이 없다.
-        const avgCost = {};
+        // 원가 총액 대신 평균 단가로 나눠서 보낸다. 수익 금액은 산 물량으로만
+        // 재야 하므로(창업자 몫은 원가가 없다) qty 도 같이 실어 준다.
+        // 산 적 없는 주식만 들고 있으면 아예 안 실린다 — 보여 줄 "내 수익률" 이 없다.
+        const cost = {};
         for (const [cid, c] of Object.entries(p.cost)) {
-          if (c.qty > 0) avgCost[cid] = Game.round2(c.total / c.qty);
+          if (c.qty > 0) cost[cid] = { qty: Game.round2(c.qty), avg: Game.round2(c.total / c.qty) };
         }
         return {
           id: p.id,
@@ -2184,7 +2184,7 @@ class Game {
           cash: Math.round(p.cash),
           inv,
           shares: p.shares,
-          avgCost,
+          cost,
           debt: Math.round(p.debt),
           bonds: Math.round(p.bonds),
           credit: this.creditLimit(p),
