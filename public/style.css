@@ -578,12 +578,6 @@ input:focus, select:focus {
   border-color: #3d5a80;
 }
 
-/* 개장가 대비 누적 수익률 */
-.chip-return {
-  font-variant-numeric: tabular-nums;
-  font-size: 0.85rem;
-}
-
 .stock-price {
   font-variant-numeric: tabular-nums;
 }

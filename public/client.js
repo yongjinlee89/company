@@ -1270,7 +1270,8 @@ function renderStocks() {
         if (held > 0 && avg > 0) {
           const pct = (s.price / avg - 1) * 100;
           myRet.textContent = ` · 수익률 ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
-          myRet.title = `평균 ${fmt2(avg)}에 산 ${fmt(held)}주 · 평가 ${fmt(s.price * held)}`;
+          // 창업자 몫은 원가에 안 잡히므로 물량을 같이 적지 않는다 (산 주식만의 값)
+          myRet.title = `평균 ${fmt2(avg)}에 매수`;
           myRet.classList.toggle('up', pct > 0.05);
           myRet.classList.toggle('down', pct < -0.05);
         } else {
@@ -1365,9 +1366,6 @@ function renderStocks() {
       head.appendChild(spark);
       row.appendChild(head);
 
-      const ret = el('span', 'chip-return');
-      head.appendChild(ret);
-
       const meta = el('div', 'small stock-meta');
       const held = el('span', 'holders');
       const myRet = el('span', 'my-return');
@@ -1383,12 +1381,6 @@ function renderStocks() {
         const n = mine ? mine.shares[id] || 0 : 0;
         price.textContent = `${fmt2(s.price)}/주`;
         float.textContent = `물량 ${fmt(s.float + s.npc)} · 거래 ${fmt(s.volume || 0)}/초`;
-
-        // 개장가 대비 누적 수익률 — 지금 사도 될지 판단하는 기준이 된다
-        const gain = s.start ? s.price / s.start - 1 : 0;
-        ret.textContent = `${gain >= 0 ? '+' : ''}${(gain * 100).toFixed(1)}%`;
-        ret.className = 'chip-return ' + (gain > 0.005 ? 'up' : gain < -0.005 ? 'down' : '');
-        ret.title = `개장가 ${fmt2(s.start)} 대비`;
 
         // 내 몫 — 평가금액과, 내가 산 값 대비 수익률. 우량주는 배당이 없어서
         // 여기서 버는 돈은 오직 이 차익뿐이라 제일 중요한 숫자다.

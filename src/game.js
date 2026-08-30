@@ -63,9 +63,9 @@ const SHORT_IMPACT = 0.0003;
  * 우량주 — 특정 플레이어 회사에 안 묶인 대형 종목. 개별 회사(500주)보다 훨씬
  * 많은 주식수로 둬서 웬만큼 사고팔아도 시세가 잘 안 흔들리는 "안전하게 돈을
  * 묻어 둘 곳" 역할을 한다. 창업자 몫·점진 상장 같은 개념이 없어 처음부터
- * 전량 시장에 풀려 있다. 기준가는 제자리에 머물고 mood 진폭도 개별 회사 주식보다
- * 훨씬 좁게 잡아서 "우량주다운" 안정감을 준다 — 가만히 들고만 있어서 불어나는
- * 자산은 채권 쪽이고, 여기서 버는 돈은 싸게 사서 비싸게 판 차익뿐이다.
+ * 전량 시장에 풀려 있다. 기준가가 아주 완만히 우상향하고 mood 진폭도 개별 회사
+ * 주식보다 훨씬 좁게 잡아서 "우량주다운" 안정감을 준다 — 다만 그 성장만으로는
+ * 채권을 못 이기므로, 여기서 버는 돈은 대부분 싸게 사서 비싸게 판 차익이다.
  * 그래도 금융위기·랠리는 절반 강도로 걸쳐서 완전한 무풍지대는 아니게 한다.
  */
 /*
@@ -89,9 +89,11 @@ const BLUE_CHIP_ACTIVITY = 40; // 외인·기관이 초당 굴리는 물량
 // 단위여야 하고, 시가총액(주식수 × 시작가)이 판 전체 자금을 훨씬 웃돌아야
 // "돈을 얼마든지 묻어 둘 수 있는 곳" 이 된다.
 const BLUE_CHIP_START_PRICE = 0.01; // 시작 자금 1000 이면 주당 10원 (시총 20만)
-// 기준가는 시간이 지나도 오르지 않는다. 가만히 두기만 해서 불어나는 자산은 채권이
-// 맡고, 우량주는 "싸게 사서 비싸게 파는" 시세 차익만으로 돈을 버는 곳이다 —
-// 그래야 언제 사고 언제 파는지가 실제 판단거리가 된다.
+// 기준가가 초당 이만큼 복리로 우상향한다. 채권(0.2%/초, 10분에 3.3배)의 4분의 1도
+// 안 되는 아주 완만한 흐름이라(10분에 1.35배) 묻어 두기만 해서는 채권을 못 이긴다 —
+// 가만히 불어나는 자산은 채권이 맡고, 우량주에서 버는 돈은 대부분 싸게 사서 비싸게
+// 판 차익이어야 언제 사고 언제 파는지가 실제 판단거리가 된다.
+const BLUE_CHIP_GROWTH = 0.0005;
 const BLUE_CHIP_THETA = 0.15; // mood 가 제자리(1)로 돌아오려는 힘 — 개별 주식(0.08)보다 세다
 const BLUE_CHIP_SIGMA = 0.12; // mood 흔들리는 폭 — 개별 주식(0.28)의 절반 이하
 const BLUE_CHIP_MOOD_RANGE = [0.7, 1.3]; // 개별 주식(0.5~1.7)보다 좁은 변동 범위
@@ -545,9 +547,10 @@ class Game {
       inv: { iron: 0, oil: 0, grain: 0, machine: 0, food: 0, semi: 0 },
       // shares[대상 회사 id] = 보유 주식 수
       shares: { [info.id]: FOUNDER_SHARES },
-      // cost[대상 회사 id] = 지금 들고 있는 주식을 사는 데 쓴 돈의 합.
-      // 평균 단가(= cost / shares)를 내서 "내 수익률" 을 보여 주는 데 쓴다.
-      // 팔면 판 만큼의 원가를 같은 비율로 덜어낸다(평균 원가법).
+      // cost[대상 회사 id] = { qty, total } — 실제로 사서 들고 있는 물량과 그 매수 금액.
+      // 평균 단가(= total / qty)를 내서 "내가 산 값 대비 내 수익률" 을 보여 주는 데 쓴다.
+      // 창업자 몫은 산 게 아니라 여기 안 들어간다 — 그걸 넣으면 개장가 대비 변동을
+      // 수익률인 척 보여 주게 된다. 팔면 판 비율만큼 덜어낸다(평균 원가법).
       cost: {},
       debt: 0,
       bonds: 0, // 채권 원금 — 초당 이자가 붙어 스스로 불어난다
@@ -578,9 +581,6 @@ class Game {
         _lots: 0, // 외인·기관 주문 소수점 누적
         _shortLots: 0, // 외인·기관 공매도 주문 소수점 누적
       };
-      // 창업자 몫은 산 게 아니지만 원가가 없으면 수익률이 무한대가 된다 —
-      // 개장가에 받은 것으로 쳐서 자기 회사 주식도 같은 잣대로 잰다.
-      p.cost[p.id] = FOUNDER_SHARES * this.stocks[p.id].price;
     }
 
     // 우량주 — 특정 회사에 안 묶인 대형 종목. 처음부터 전량 상장돼 있다.
@@ -591,7 +591,6 @@ class Game {
         name: bc.name,
         price: start,
         baseline: start,
-        start, // 개장가 — 누적 수익률을 보여 주려고 남겨 둔다
         float: BLUE_CHIP_SHARES, // 처음부터 전량 상장이라 unissued 가 없다
         npc: 0,
         mood: 1,
@@ -1294,7 +1293,7 @@ class Game {
       s.float -= fromFloat;
       s.npc -= qty - fromFloat;
       p.shares[company] = (p.shares[company] || 0) + qty;
-      p.cost[company] = (p.cost[company] || 0) + total;
+      this.addCost(p, company, qty, total);
       s.price = Math.round(price * 100) / 100;
       this.pushLog(`${p.name} 님이 ${target.name} 주식 ${qty}주 매수 (-${total})`);
       this.checkTakeover(company);
@@ -1320,17 +1319,29 @@ class Game {
     return { ok: false, error: '잘못된 요청입니다.' };
   }
 
+  /** 산 물량과 그 금액을 원가에 쌓는다. */
+  addCost(p, id, qty, total) {
+    const c = p.cost[id] || (p.cost[id] = { qty: 0, total: 0 });
+    c.qty += qty;
+    c.total += total;
+  }
+
   /**
    * 판 만큼의 매수 원가를 덜어낸다 (평균 원가법) — 남은 주식의 평균 단가는
-   * 그대로 유지된다. 다 팔면 원가도 함께 지워진다.
+   * 그대로 유지된다. 창업자 몫과 산 주식이 섞여 있으면 보유분 전체에서 골고루
+   * 판 것으로 보므로, 원가도 남은 보유 비율만큼만 남는다. 다 팔면 함께 지워진다.
    */
   reduceCost(p, id, qty) {
+    const c = p.cost[id];
+    if (!c) return;
     const held = p.shares[id] || 0;
     if (held <= qty) {
       delete p.cost[id];
       return;
     }
-    p.cost[id] = (p.cost[id] || 0) * ((held - qty) / held);
+    const keep = (held - qty) / held;
+    c.qty *= keep;
+    c.total *= keep;
   }
 
   /**
@@ -1362,7 +1373,7 @@ class Game {
       s.float -= fromFloat;
       s.npc -= qty - fromFloat;
       p.shares[chip] = (p.shares[chip] || 0) + qty;
-      p.cost[chip] = (p.cost[chip] || 0) + total;
+      this.addCost(p, chip, qty, total);
       s.price = Math.round(price * 100) / 100;
       s.turnover += qty;
       this.pushLog(`${p.name} 님이 ${s.name} ${qty}주 매수 (-${total})`);
@@ -1744,12 +1755,14 @@ class Game {
   }
 
   /**
-   * 우량주 — 회사 실적이 아니라 제자리에 머무는 자기 기준가와 좁은 mood 로만 움직인다.
+   * 우량주 — 회사 실적이 아니라 자기 기준가(아주 완만히 우상향)와 좁은 mood 로만 움직인다.
    * 주식수가 많아 체결 충격이 작으므로 큰돈을 넣어도 시세가 잘 안 밀린다.
    * 금융위기·랠리는 절반 강도로만 걸린다 — 완전한 무풍지대면 여기에만 넣는 게 정답이 된다.
    */
   tradeBlueChips(dt) {
     for (const s of Object.values(this.blueChips)) {
+      s.baseline *= Math.pow(1 + BLUE_CHIP_GROWTH, dt);
+
       s.mood += (1 - s.mood) * BLUE_CHIP_THETA * dt + (Math.random() - 0.5) * BLUE_CHIP_SIGMA * Math.sqrt(dt);
       s.mood = Math.min(BLUE_CHIP_MOOD_RANGE[1], Math.max(BLUE_CHIP_MOOD_RANGE[0], s.mood));
 
@@ -2157,10 +2170,12 @@ class Game {
         for (const [cid, pos] of Object.entries(p.shorts)) {
           shorts[cid] = { shares: pos.shares, avg: Game.round2(pos.proceeds / pos.shares) };
         }
-        // 화면에서 쓰는 건 평균 단가뿐이라 원가 총액 대신 나눠서 보낸다
+        // 화면에서 쓰는 건 평균 단가뿐이라 원가 총액 대신 나눠서 보낸다.
+        // 산 적 없는 주식(창업자 몫)만 들고 있으면 아예 안 실린다 — 그런 주식엔
+        // 보여 줄 "내 수익률" 이 없다.
         const avgCost = {};
-        for (const [cid, n] of Object.entries(p.shares)) {
-          if (n > 0 && p.cost[cid] > 0) avgCost[cid] = Game.round2(p.cost[cid] / n);
+        for (const [cid, c] of Object.entries(p.cost)) {
+          if (c.qty > 0) avgCost[cid] = Game.round2(c.total / c.qty);
         }
         return {
           id: p.id,
