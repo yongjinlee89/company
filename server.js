@@ -13,14 +13,15 @@ const PORT = process.env.PORT || Number(process.argv[2]) || 7861;
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  transports: ['websocket', 'polling'],
+  // 웹소켓 전용 — HTTP 롱폴링 폴백은 메시지마다 HTTP 헤더가 붙어서
+  // 같은 게임을 해도 트래픽이 몇 배로 나간다 (실제로 월 한도를 태운 주범).
+  transports: ['websocket'],
   // 끊김을 빨리 알아채도록 짧게
   pingInterval: 10000,
   pingTimeout: 10000,
   cors: { origin: '*' },
   // 트래픽 절감 — 상태 JSON 은 키가 반복돼 압축이 아주 잘 된다 (보통 5~10배)
   perMessageDeflate: { threshold: 256 },
-  httpCompression: { threshold: 256 },
 });
 
 // 정적 파일(HTML/JS/CSS)을 gzip 으로 눌러 보낸다 — 첫 접속 용량이 1/4 수준이 된다
@@ -35,7 +36,17 @@ app.use(
     setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
   })
 );
-app.get('/healthz', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
+// 지금 서버에서 뭐가 돌고 있는지 밖에서 확인하는 창구.
+// playing 이 0 이고 sockets 가 0 이면 트래픽이 나갈 곳이 없다.
+app.get('/healthz', (_req, res) => {
+  let playing = 0;
+  let humans = 0;
+  for (const room of rooms.values()) {
+    if (room.phase === 'playing') playing++;
+    humans += room.players.filter((p) => p.connected && !p.isBot).length;
+  }
+  res.json({ ok: true, rooms: rooms.size, playing, humans, sockets: io.engine.clientsCount });
+});
 
 /** @type {Map<string, Room>} */
 const rooms = new Map();
@@ -140,6 +151,33 @@ io.on('connection', (socket) => {
     if (!s) return;
     const room = rooms.get(s.roomId);
     if (room) sendFull(socket, room);
+  });
+
+  /* ------------------------------------------------ 백그라운드 탭 절전
+   *
+   * 탭을 덮어 두면(다른 앱·다른 탭) 화면을 안 보는데도 상태 스트림을 계속
+   * 받아 트래픽이 샌다 — 밤새 열어 둔 탭 하나가 월 한도를 갉아먹는 주범.
+   * bg: 방송 채널에서만 빠진다 (자리와 회사는 그대로, 연결도 유지).
+   *     30분 넘게 안 돌아오면 연결 자체를 끊는다 — 유령 접속이 무료 인스턴스를
+   *     계속 깨워 두는 것도 막는다. (돌아오면 자동 재접속·재입장된다)
+   * fg: 다시 채널에 넣고 밀린 상태를 전체로 보내준다.
+   */
+  socket.on('bg', () => {
+    const s = sessions.get(socket.id);
+    if (!s) return;
+    socket.leave(s.roomId);
+    clearTimeout(socket._bgTimer);
+    socket._bgTimer = setTimeout(() => socket.disconnect(true), 30 * 60 * 1000);
+  });
+
+  socket.on('fg', () => {
+    clearTimeout(socket._bgTimer);
+    const s = sessions.get(socket.id);
+    if (!s) return;
+    const room = rooms.get(s.roomId);
+    if (!room) return;
+    socket.join(s.roomId);
+    sendFull(socket, room);
   });
 
   function withRoom(handler) {
@@ -273,6 +311,7 @@ io.on('connection', (socket) => {
   );
 
   socket.on('disconnect', () => {
+    clearTimeout(socket._bgTimer);
     const s = sessions.get(socket.id);
     if (!s) return;
     sessions.delete(socket.id);

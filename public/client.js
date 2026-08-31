@@ -2,7 +2,8 @@
 
 /* ================================================================== 기본 설정 */
 
-const socket = io({ transports: ['websocket', 'polling'] });
+// 웹소켓 전용 — HTTP 롱폴링 폴백은 트래픽이 몇 배라 아예 쓰지 않는다 (서버도 막아 둠)
+const socket = io({ transports: ['websocket'] });
 
 // 새로고침해도 같은 사람으로 인식되도록 브라우저에 id 를 저장한다
 function myId() {
@@ -78,6 +79,20 @@ socket.on('connect', () => {
       },
       () => {}
     );
+  }
+});
+
+/* 탭을 덮어 두면 20초 뒤 상태 수신을 멈춰 트래픽을 아낀다.
+ * 돌아오면 서버가 밀린 상태를 전체로 다시 보내준다.
+ * (30분 넘게 안 돌아오면 서버가 연결을 끊고, 돌아올 때 자동 재접속된다) */
+let bgTimer = null;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTimeout(bgTimer);
+    bgTimer = setTimeout(() => socket.emit('bg'), 20000);
+  } else {
+    clearTimeout(bgTimer);
+    socket.emit('fg');
   }
 });
 
