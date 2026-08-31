@@ -607,6 +607,7 @@ class Game {
     this._incomeTimer = 0;
     this._controllers = {};
     this.log = [];
+    this._logSeq = 0;
   }
 
   player(id) {
@@ -614,7 +615,9 @@ class Game {
   }
 
   pushLog(text) {
-    this.log.push({ t: Date.now(), text });
+    // id 는 전송용 고유 키 — 배열 인덱스로 보내면 창이 밀릴 때마다 전체가
+    // 재전송되므로, 바뀌지 않는 키에 묶어 새 줄만 나가게 한다 (room.state 참고)
+    this.log.push({ id: ++this._logSeq, t: Date.now(), text });
     if (this.log.length > 120) this.log.shift();
   }
 
@@ -2154,16 +2157,19 @@ class Game {
    */
   publicState() {
     const r2 = Game.round2;
+    const r1 = (n) => Math.round(n * 10) / 10;
     const market = {};
     for (const [k, m] of Object.entries(this.market)) {
-      market[k] = { price: r2(m.price), base: r2(m.base), baseline: r2(m.baseline) };
+      // 화면이 소수 한 자리까지만 보여주므로 한 자리로 자른다 — 잔 변동은 아예 안 나간다.
+      // baseline 은 "사건 중" 강조 표시에만 쓰이므로 값 대신 불리언(ev)으로 보낸다.
+      market[k] = { price: r1(m.price), base: r1(m.base), ev: m.eventMult !== 1 };
     }
     const stocks = {};
     for (const [id, s] of Object.entries(this.stocks)) {
       stocks[id] = {
         price: r2(s.price),
-        float: Math.round(s.float),
-        npc: Math.round(s.npc),
+        // 화면은 살 수 있는 물량 합계(float+npc)만 보여준다 — 합쳐서 숫자 하나로
+        avail: Math.round(s.float + s.npc),
         unissued: Math.round(s.unissued),
         volume: Math.round(s.volume),
       };
@@ -2173,23 +2179,22 @@ class Game {
       blueChips[id] = {
         name: s.name,
         price: r2(s.price),
-        float: Math.round(s.float),
-        npc: Math.round(s.npc),
+        avail: Math.round(s.float + s.npc),
         volume: Math.round(s.volume),
       };
     }
     const state = {
-      elapsed: Math.round(this.elapsed * 10) / 10,
+      // 초 단위면 충분하다 (시계·사건 배너 모두 초 해상도)
+      elapsed: Math.round(this.elapsed),
       rentalSupply: this.rentalSupply(),
       rentalDemand: Math.round(this.rentalDemand() * 100) / 100,
-      // 금리는 매 틱 움직이므로 상수가 아니라 상태로 보낸다
-      loanRate: Math.round(this.loanRate() * 1e6) / 1e6,
-      bondRate: Math.round(this.bondRate() * 1e6) / 1e6,
+      // 금리 국면 배수만 보낸다 — 대출·채권 이자율은 클라이언트가
+      // 상수(loanInterest/bondInterest) × rateMult 로 계산한다. remaining 도
+      // duration − elapsed 로 계산하므로 안 보낸다.
       rateMult: Math.round(this.rateMult * 100) / 100,
       depotSupply: this.depotSupply(),
       freightDemand: Math.round(this.freightDemand() * 100) / 100,
       duration: this.settings.duration,
-      remaining: Math.max(0, Math.round((this.settings.duration - this.elapsed) * 10) / 10),
       ended: this.ended,
       ranking: this.ranking,
       cities: this.cities.map((c) => ({
@@ -2197,7 +2202,8 @@ class Game {
         y: c.y,
         name: c.name,
         mod: c.mod,
-        demand: Object.fromEntries(Object.entries(c.demand).map(([k, v]) => [k, Math.round(v * 1000) / 1000])),
+        // 수요는 % 로만 보여주므로 두 자리면 충분하다
+        demand: Object.fromEntries(Object.entries(c.demand).map(([k, v]) => [k, r2(v)])),
         boost: r2(c.boost),
       })),
       market,
@@ -2206,7 +2212,8 @@ class Game {
       event: this.event,
       players: this.players.map((p) => {
         const inv = {};
-        for (const [k, n] of Object.entries(p.inv)) inv[k] = Game.round2(n);
+        // 재고 표시는 소수 한 자리 — 잘게 쌓이는 변화가 매초 나가지 않게 한 자리로 자른다
+        for (const [k, n] of Object.entries(p.inv)) inv[k] = r1(n);
         const shorts = {};
         for (const [cid, pos] of Object.entries(p.shorts)) {
           shorts[cid] = { shares: pos.shares, avg: Game.round2(pos.proceeds / pos.shares) };
@@ -2228,7 +2235,8 @@ class Game {
           cost,
           debt: Math.round(p.debt),
           bonds: Math.round(p.bonds),
-          credit: this.creditLimit(p),
+          // 한도는 10단위면 충분하다 — 자산이 조금만 흔들려도 매초 바뀌는 걸 막는다
+          credit: Math.round(this.creditLimit(p) / 10) * 10,
           shorts,
           autoBuy: p.autoBuy,
           research: p.research,
@@ -2236,9 +2244,9 @@ class Game {
           researchCost: Object.fromEntries(
             Object.keys(RESEARCH).map((kind) => [kind, this.researchCost(p, kind)])
           ),
-          incomePerSec: r2(p.incomePerSec),
+          incomePerSec: r1(p.incomePerSec),
           netWorth: this.netWorth(p),
-          taxRate: Math.round(this.taxRate(p) * 1000) / 1000,
+          taxRate: r2(this.taxRate(p)),
           controller: (() => {
             const c = this.controllerOf(p.id);
             return c ? c.id : null;

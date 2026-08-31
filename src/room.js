@@ -44,6 +44,7 @@ class Room {
     this.hostId = null;
     this.game = null;
     this.chat = [];
+    this._chatSeq = 0; // 채팅 전송용 고유 id (game.log 의 id 와 같은 역할)
     this.updatedAt = Date.now();
     this._loop = null;
     this._ticks = 0;
@@ -305,9 +306,14 @@ class Room {
     if (this.game) {
       this.game.pushLog(text);
     } else {
-      this.chat.push({ t: Date.now(), name: '알림', text });
-      if (this.chat.length > 100) this.chat.shift();
+      this.pushChat('알림', text);
     }
+  }
+
+  /** 채팅 한 줄을 추가한다. id 는 전송용 고유 키 (배열 창 밀림 재전송 방지) */
+  pushChat(name, text) {
+    this.chat.push({ id: ++this._chatSeq, t: Date.now(), name, text });
+    if (this.chat.length > 100) this.chat.shift();
   }
 
   /**
@@ -337,11 +343,13 @@ class Room {
         voice: p.voice,
         muted: p.muted,
       })),
-      chat: this.chat.slice(-60),
+      // 배열로 보내면 창이 한 칸 밀릴 때마다 전체가 재전송된다 (인덱스 기반 diff).
+      // 항목의 고유 id 를 키로 쓰면 새 줄 추가·옛 줄 삭제만 나간다.
+      chat: Object.fromEntries(this.chat.slice(-60).map((e) => [e.id, e])),
     };
     if (this.game) {
       base.game = this.game.publicState();
-      base.log = this.game.log.slice(-40);
+      base.log = Object.fromEntries(this.game.log.slice(-40).map((e) => [e.id, e]));
     }
     return base;
   }

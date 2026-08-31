@@ -1199,7 +1199,7 @@ function run(game, seconds) {
   const st = g.publicState();
   assert.ok(st.map && st.constants, '상태에는 맵과 상수가 들어간다 (반복 전송은 diff 가 막는다)');
   assert.ok(st.players && st.market && st.stocks && st.cities);
-  assert.ok(typeof st.remaining === 'number');
+  assert.ok(typeof st.elapsed === 'number' && typeof st.duration === 'number', '남은 시간은 클라이언트가 계산한다');
   // 비밀·내부 계산용 필드가 새어 나가지 않는다
   assert.ok(!('_incomeAccum' in st.players[0]), '내부 집계값은 보내지 않는다');
   const wireStock = Object.values(st.stocks)[0];

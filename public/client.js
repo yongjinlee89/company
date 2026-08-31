@@ -136,6 +136,8 @@ socket.on('state', (msg) => {
     return;
   }
   S.you = ME;
+  // 남은 시간은 서버가 안 보낸다 — 여기서 계산하고, 아래 보간 타이머가 이어 깎는다
+  if (S.game) S.game.remaining = Math.max(0, (S.game.duration || 0) - (S.game.elapsed || 0));
   if (prevPhase !== S.phase) {
     // 새 게임이 시작되면 화면 조각과 주가 기록을 모두 새로 만든다
     resultDismissed = false;
@@ -1039,7 +1041,7 @@ function renderMarket() {
         price.className = diff > 0.01 ? 'up' : diff < -0.01 ? 'down' : '';
         // 사건 중에는 기준가 자체가 흔들리므로 매번 다시 쓴다
         base.textContent = ` (기준 ${fmt1(m.base)})`;
-        base.classList.toggle('event-base', Math.abs(m.base - m.baseline) > 0.01);
+        base.classList.toggle('event-base', !!m.ev);
         const p = me();
         held.textContent = p ? ` · 보유 ${fmt1(p.inv[key] || 0)}` : '';
         drawSpark(spark, priceHistory['mat:' + key]);
@@ -1277,7 +1279,7 @@ function renderStocks() {
         price.textContent = `${fmt2(s.price)}/주`;
         // 살 수 있는 물량 + 외인·기관 거래량 (미상장 물량이 남았으면 함께 알려준다)
         const pending = s.unissued > 0 ? ` (미상장 ${fmt(s.unissued)})` : '';
-        float.textContent = `물량 ${fmt(s.float + s.npc)}${pending} · 거래 ${fmt(s.volume || 0)}/초`;
+        float.textContent = `물량 ${fmt(s.avail)}${pending} · 거래 ${fmt(s.volume || 0)}/초`;
         drawSpark(spark, priceHistory['stock:' + p.id]);
 
         // 이 회사 주식에서 내가 받는 배당 / 내 회사가 물고 있는 배당
@@ -1414,7 +1416,7 @@ function renderStocks() {
         const mine = me();
         const n = mine ? mine.shares[id] || 0 : 0;
         price.textContent = `${fmt2(s.price)}/주`;
-        float.textContent = `물량 ${fmt(s.float + s.npc)} · 거래 ${fmt(s.volume || 0)}/초`;
+        float.textContent = `물량 ${fmt(s.avail)} · 거래 ${fmt(s.volume || 0)}/초`;
 
         // 내 몫 — 평가금액과, 내가 산 값 대비 수익률. 우량주는 배당이 없어서
         // 여기서 버는 돈은 오직 이 차익뿐이라 제일 중요한 숫자다.
@@ -1546,8 +1548,8 @@ function renderCompany() {
       live.push(() => {
         const my = me();
         if (!my) return;
-        // 금리는 계속 움직이므로 상수가 아니라 지금 상태값을 쓴다
-        const live = S.game.loanRate;
+        // 금리는 기준 이자 × 국면 배수 — 서버는 배수(rateMult)만 보낸다
+        const live = S.game.constants.loanInterest * S.game.rateMult;
         const rate = Math.round(live * 10000) / 100;
         const phase = S.game.rateMult >= 1.25 ? ' 🔺고금리' : S.game.rateMult <= 0.8 ? ' 🔻저금리' : '';
         info.innerHTML = '';
@@ -1601,8 +1603,8 @@ function renderCompany() {
       live.push(() => {
         const my = me();
         if (!my) return;
-        // 금리는 계속 움직이므로 상수가 아니라 지금 상태값을 쓴다
-        const live = S.game.bondRate;
+        // 금리는 기준 이자 × 국면 배수 — 서버는 배수(rateMult)만 보낸다
+        const live = S.game.constants.bondInterest * S.game.rateMult;
         const rate = Math.round(live * 10000) / 100;
         const phase = S.game.rateMult >= 1.25 ? ' 🔺고금리' : S.game.rateMult <= 0.8 ? ' 🔻저금리' : '';
         info.innerHTML = '';
@@ -1671,9 +1673,10 @@ function renderCompany() {
 /** 게임 사건과 채팅을 시간순으로 한 목록에 모아 보여준다 */
 function renderLog() {
   const list = $('#log-list');
+  // 기록·채팅은 id 를 키로 한 객체로 온다 (전송량 절감) — 값만 모아 시간순으로 편다
   const items = [
-    ...(S.log || []).map((x) => ({ t: x.t, text: x.text })),
-    ...(S.chat || []).map((x) => ({ t: x.t, name: x.name, text: x.text })),
+    ...Object.values(S.log || {}).map((x) => ({ t: x.t, text: x.text })),
+    ...Object.values(S.chat || {}).map((x) => ({ t: x.t, name: x.name, text: x.text })),
   ]
     .sort((a, b) => a.t - b.t)
     .slice(-80);

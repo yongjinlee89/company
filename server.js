@@ -267,8 +267,7 @@ io.on('connection', (socket) => {
       const text = String(payload.text || '').trim().slice(0, 200);
       if (!text) return { ok: true };
       const p = room.player(playerId);
-      room.chat.push({ t: Date.now(), name: p ? p.name : '?', text });
-      if (room.chat.length > 100) room.chat.shift();
+      room.pushChat(p ? p.name : '?', text);
       return { ok: true };
     })
   );
