@@ -6,6 +6,12 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["server.js"],
       "port": 7861
+    },
+    {
+      "name": "company-alt",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server.js", "7862"],
+      "port": 7862
     }
   ]
 }

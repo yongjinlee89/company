@@ -2143,14 +2143,48 @@ class Game {
     return Math.round(n * 100) / 100;
   }
 
-  publicState(includeMap = true) {
+  /**
+   * 방에 뿌릴 공개 상태.
+   *
+   * 트래픽을 줄이려고 화면에 실제로 쓰이는 값만, 반올림해서 담는다.
+   *  - 반올림: 시세류는 소수 둘째 자리면 충분한데, 내부 계산값은 소수점이
+   *    17자리까지 늘어져 JSON 크기를 몇 배로 불리고 diff 도 매 틱 바뀌게 만든다.
+   *  - 내부 필드 제거: mood·_lots 같은 계산용 값은 클라이언트가 안 쓴다.
+   *  - 맵 압축: 타일의 null/false 필드는 아예 빼서 {t:'plain'} 한 조각으로 만든다.
+   */
+  publicState() {
+    const r2 = Game.round2;
+    const market = {};
+    for (const [k, m] of Object.entries(this.market)) {
+      market[k] = { price: r2(m.price), base: r2(m.base), baseline: r2(m.baseline) };
+    }
+    const stocks = {};
+    for (const [id, s] of Object.entries(this.stocks)) {
+      stocks[id] = {
+        price: r2(s.price),
+        float: Math.round(s.float),
+        npc: Math.round(s.npc),
+        unissued: Math.round(s.unissued),
+        volume: Math.round(s.volume),
+      };
+    }
+    const blueChips = {};
+    for (const [id, s] of Object.entries(this.blueChips)) {
+      blueChips[id] = {
+        name: s.name,
+        price: r2(s.price),
+        float: Math.round(s.float),
+        npc: Math.round(s.npc),
+        volume: Math.round(s.volume),
+      };
+    }
     const state = {
       elapsed: Math.round(this.elapsed * 10) / 10,
       rentalSupply: this.rentalSupply(),
       rentalDemand: Math.round(this.rentalDemand() * 100) / 100,
       // 금리는 매 틱 움직이므로 상수가 아니라 상태로 보낸다
-      loanRate: this.loanRate(),
-      bondRate: this.bondRate(),
+      loanRate: Math.round(this.loanRate() * 1e6) / 1e6,
+      bondRate: Math.round(this.bondRate() * 1e6) / 1e6,
       rateMult: Math.round(this.rateMult * 100) / 100,
       depotSupply: this.depotSupply(),
       freightDemand: Math.round(this.freightDemand() * 100) / 100,
@@ -2158,10 +2192,17 @@ class Game {
       remaining: Math.max(0, Math.round((this.settings.duration - this.elapsed) * 10) / 10),
       ended: this.ended,
       ranking: this.ranking,
-      cities: this.cities,
-      market: this.market,
-      stocks: this.stocks,
-      blueChips: this.blueChips,
+      cities: this.cities.map((c) => ({
+        x: c.x,
+        y: c.y,
+        name: c.name,
+        mod: c.mod,
+        demand: Object.fromEntries(Object.entries(c.demand).map(([k, v]) => [k, Math.round(v * 1000) / 1000])),
+        boost: r2(c.boost),
+      })),
+      market,
+      stocks,
+      blueChips,
       event: this.event,
       players: this.players.map((p) => {
         const inv = {};
@@ -2195,7 +2236,7 @@ class Game {
           researchCost: Object.fromEntries(
             Object.keys(RESEARCH).map((kind) => [kind, this.researchCost(p, kind)])
           ),
-          incomePerSec: p.incomePerSec,
+          incomePerSec: r2(p.incomePerSec),
           netWorth: this.netWorth(p),
           taxRate: Math.round(this.taxRate(p) * 1000) / 1000,
           controller: (() => {
@@ -2205,30 +2246,44 @@ class Game {
         };
       }),
     };
-    // 맵은 땅을 사거나 건물을 지을 때만 바뀌므로 주기 갱신에서는 빼서 트래픽을 아낀다
-    if (includeMap) {
-      state.map = this.map;
-      state.constants = {
-        materials: MATERIALS,
-        products: PRODUCTS,
-        hitech: HITECH,
-        tileTypes: TILE_TYPES,
-        buildings: BUILDINGS,
-        totalShares: TOTAL_SHARES,
-        blueChipShares: BLUE_CHIP_SHARES,
-        takeoverShares: TAKEOVER_SHARES,
-        dividendYield: DIVIDEND_YIELD,
-        takeoverCut: TAKEOVER_CUT,
-        loanInterest: LOAN_INTEREST,
-        bondInterest: BOND_INTEREST,
-        maxShort: MAX_SHORT,
-        resaleRate: RESALE_RATE,
-        rentSaturation: RENT_SATURATION,
-        freightSaturation: FREIGHT_SATURATION,
-        research: RESEARCH,
-        researchMax: RESEARCH_MAX,
-      };
-    }
+    // 타일은 비어 있는 필드를 빼서 잘게 만든다. 클라이언트는 모두 falsy 검사라 안전하다.
+    // (builtAt 같은 서버 내부 값도 여기서 걸러진다)
+    state.map = {
+      w: this.map.w,
+      h: this.map.h,
+      tiles: this.map.tiles.map((t) => {
+        const o = { t: t.t };
+        if (t.owner) o.owner = t.owner;
+        if (t.b) o.b = t.b;
+        if (t.mode) o.mode = t.mode;
+        if (t.route !== null && t.route !== undefined) o.route = t.route;
+        if ((t.level || 1) > 1) o.level = t.level;
+        if (t.idle) o.idle = true;
+        if (t.listPrice) o.listPrice = t.listPrice;
+        return o;
+      }),
+    };
+    // 상수는 게임 중 안 바뀌므로 diff 브로드캐스트에서 첫 전송 뒤에는 다시 안 나간다
+    state.constants = {
+      materials: MATERIALS,
+      products: PRODUCTS,
+      hitech: HITECH,
+      tileTypes: TILE_TYPES,
+      buildings: BUILDINGS,
+      totalShares: TOTAL_SHARES,
+      blueChipShares: BLUE_CHIP_SHARES,
+      takeoverShares: TAKEOVER_SHARES,
+      dividendYield: DIVIDEND_YIELD,
+      takeoverCut: TAKEOVER_CUT,
+      loanInterest: LOAN_INTEREST,
+      bondInterest: BOND_INTEREST,
+      maxShort: MAX_SHORT,
+      resaleRate: RESALE_RATE,
+      rentSaturation: RENT_SATURATION,
+      freightSaturation: FREIGHT_SATURATION,
+      research: RESEARCH,
+      researchMax: RESEARCH_MAX,
+    };
     return state;
   }
 }

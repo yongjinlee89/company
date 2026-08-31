@@ -87,23 +87,56 @@ Voice.onChange = () => {
   if (S && S.phase === 'lobby') renderLobby();
 };
 
-/* ================================================================== 상태 수신 */
+/* ================================================================== 상태 수신
+ *
+ * 트래픽을 아끼려고 서버는 상태 전체 대신 "직전 상태에서 바뀐 부분(패치)" 만 보낸다.
+ *   { v, f }        — 전체 상태 (입장·재동기화 때만)
+ *   { v, base, p }  — 내 버전(base)에 얹을 패치 → 적용하면 버전 v 가 된다
+ * 버전이 어긋나면(패치를 놓쳤으면) resync 로 전체 상태를 다시 받는다.
+ */
 
-socket.on('state', (st) => {
-  // 실시간 갱신은 트래픽을 아끼려고 맵·상수·채팅·기록을 뺀 채로 온다.
-  // 빠진 부분은 직전 상태에서 그대로 이어 쓴다.
-  if (S) {
-    if (st.game && S.game) {
-      if (!st.game.map) st.game.map = S.game.map;
-      if (!st.game.constants) st.game.constants = S.game.constants;
+// 삭제 마커 — 서버(src/diff.js)와 반드시 같은 값이어야 한다
+const PATCH_DEL = '\u0000~del~\u0000';
+let stateSeq = 0;
+
+/** 서버 diff 를 제자리에 합친다. 객체는 부분 갱신, 배열/원시값은 통째 교체. */
+function applyPatch(target, patch) {
+  for (const k of Object.keys(patch)) {
+    if (k === '$len') continue;
+    const v = patch[k];
+    if (v === PATCH_DEL) {
+      delete target[k];
+      continue;
     }
-    if (!st.chat) st.chat = S.chat;
-    if (!st.log) st.log = S.log;
+    const cur = target[k];
+    if (v !== null && typeof v === 'object' && !Array.isArray(v) && cur !== null && typeof cur === 'object') {
+      applyPatch(cur, v);
+    } else {
+      target[k] = v;
+    }
   }
-  st.you = ME;
+  if (patch.$len !== undefined && Array.isArray(target)) target.length = patch.$len;
+}
+
+socket.on('state', (msg) => {
+  if (!msg) return;
   const prevPhase = S ? S.phase : null;
-  S = st;
-  if (prevPhase !== st.phase) {
+  if (msg.f) {
+    S = msg.f;
+    stateSeq = msg.v;
+  } else if (msg.p) {
+    // 기준 버전이 안 맞으면 패치를 못 얹는다 — 전체 상태를 다시 달라고 한다
+    if (!S || stateSeq !== msg.base) {
+      socket.emit('resync');
+      return;
+    }
+    applyPatch(S, msg.p);
+    stateSeq = msg.v;
+  } else {
+    return;
+  }
+  S.you = ME;
+  if (prevPhase !== S.phase) {
     // 새 게임이 시작되면 화면 조각과 주가 기록을 모두 새로 만든다
     resultDismissed = false;
     for (const k of Object.keys(panes)) delete panes[k];

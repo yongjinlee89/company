@@ -1196,15 +1196,18 @@ function run(game, seconds) {
 /* ---------------- 상태 직렬화 ---------------- */
 {
   const g = newGame();
-  const full = g.publicState(true);
-  assert.ok(full.map && full.constants, '전체 상태에는 맵과 상수가 들어간다');
-  const light = g.publicState(false);
-  assert.ok(!light.map && !light.constants, '주기 갱신에는 맵을 빼서 트래픽을 아낀다');
-  assert.ok(light.players && light.market && light.stocks && light.cities);
-  assert.ok(typeof light.remaining === 'number');
-  // 비밀 필드가 새어 나가지 않는다
-  assert.ok(!('_incomeAccum' in light.players[0]), '내부 집계값은 보내지 않는다');
-  assert.ok(JSON.stringify(light).length < JSON.stringify(full).length, '가벼운 상태가 더 작다');
+  const st = g.publicState();
+  assert.ok(st.map && st.constants, '상태에는 맵과 상수가 들어간다 (반복 전송은 diff 가 막는다)');
+  assert.ok(st.players && st.market && st.stocks && st.cities);
+  assert.ok(typeof st.remaining === 'number');
+  // 비밀·내부 계산용 필드가 새어 나가지 않는다
+  assert.ok(!('_incomeAccum' in st.players[0]), '내부 집계값은 보내지 않는다');
+  const wireStock = Object.values(st.stocks)[0];
+  assert.ok(!('mood' in wireStock) && !('_lots' in wireStock), '주식 내부 계산값은 보내지 않는다');
+  assert.ok(!('vol' in Object.values(st.market)[0]), '시장 내부 계산값은 보내지 않는다');
+  assert.ok(!('builtAt' in st.map.tiles[0]), '타일 내부 값은 보내지 않는다');
+  // 빈 필드를 뺀 "압축 타일" 이라 상태가 작아야 한다
+  assert.ok(!('owner' in st.map.tiles.find((t) => t.t === 'plain')), '빈 타일 필드는 아예 뺀다');
   console.log('✓ 상태 직렬화');
 }
 

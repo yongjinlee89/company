@@ -3,10 +3,12 @@
 const path = require('path');
 const http = require('http');
 const express = require('express');
+const compression = require('compression');
 const { Server } = require('socket.io');
 const { Room, MIN_PLAYERS, MAX_PLAYERS } = require('./src/room');
+const { diff } = require('./src/diff');
 
-const PORT = process.env.PORT || 7861;
+const PORT = process.env.PORT || Number(process.argv[2]) || 7861;
 
 const app = express();
 const server = http.createServer(app);
@@ -16,8 +18,13 @@ const io = new Server(server, {
   pingInterval: 10000,
   pingTimeout: 10000,
   cors: { origin: '*' },
+  // 트래픽 절감 — 상태 JSON 은 키가 반복돼 압축이 아주 잘 된다 (보통 5~10배)
+  perMessageDeflate: { threshold: 256 },
+  httpCompression: { threshold: 256 },
 });
 
+// 정적 파일(HTML/JS/CSS)을 gzip 으로 눌러 보낸다 — 첫 접속 용량이 1/4 수준이 된다
+app.use(compression());
 // 배포한 뒤에도 브라우저에 옛 화면이 남지 않도록 매번 최신인지 확인하게 한다.
 // no-cache 는 "캐시하지 마라"가 아니라 "쓰기 전에 서버에 물어봐라" 라서,
 // 바뀐 게 없으면 304 만 오가므로 트래픽 부담은 거의 없다.
@@ -36,19 +43,51 @@ const rooms = new Map();
 const sessions = new Map();
 
 /**
- * 방 전체에 같은 상태를 한 번만 직렬화해서 보낸다.
- * 숨겨진 정보가 없는 게임이라 가능하고, 0.5초마다 도는 실시간 갱신에서 비용이 크게 줄어든다.
+ * 방 전체에 "바뀐 부분만" 보낸다 — 트래픽 절감의 핵심.
  *
- * @param {boolean} full 맵·상수까지 실어 보낼지 (입장 직후 / 맵이 바뀐 순간)
+ * 매번 상태 전체를 직렬화해 보내는 대신, 직전에 보낸 스냅샷과 비교해
+ * diff(패치)만 브로드캐스트한다. 맵·상수·설정처럼 안 바뀌는 부분은
+ * 자동으로 빠지므로 "전체/부분" 을 따로 구분할 필요가 없다.
+ *
+ * 메시지 형식:
+ *   { v, f }          — 전체 상태 (입장·재동기화 때만)
+ *   { v, base, p }    — base 버전에서 v 버전으로 가는 패치
+ * 클라이언트는 자기 버전이 base 와 다르면 'resync' 를 요청한다.
  */
-function broadcast(room, full = true) {
-  io.to(room.id).emit('state', room.state(full));
+function snapshotOf(room) {
+  // 상태는 살아 있는 게임 객체를 참조하므로, 다음 비교를 위해 깊은 사본을 뜬다
+  return JSON.parse(JSON.stringify(room.state()));
+}
+
+function broadcast(room) {
+  const snap = snapshotOf(room);
+  if (!room._snap) {
+    room._snap = snap;
+    room._seq = 1;
+    io.to(room.id).emit('state', { v: 1, f: snap });
+    return;
+  }
+  const patch = diff(room._snap, snap);
+  if (patch === undefined) return; // 바뀐 게 없으면 아예 안 보낸다
+  const base = room._seq;
+  room._seq = base + 1;
+  room._snap = snap;
+  io.to(room.id).emit('state', { v: room._seq, base, p: patch });
+}
+
+/** 한 소켓에만 전체 상태를 보낸다 (입장 직후 / 재동기화). 방 전체에는 뿌리지 않는다. */
+function sendFull(socket, room) {
+  if (!room._snap) {
+    room._snap = snapshotOf(room);
+    room._seq = 1;
+  }
+  socket.emit('state', { v: room._seq, f: room._snap });
 }
 
 function getRoom(roomId) {
   let room = rooms.get(roomId);
   if (!room) {
-    room = new Room(roomId, (r, full) => broadcast(r, full));
+    room = new Room(roomId, (r) => broadcast(r));
     rooms.set(roomId, room);
   }
   return room;
@@ -89,8 +128,18 @@ io.on('connection', (socket) => {
     sessions.set(socket.id, { roomId, playerId });
     socket.join(roomId);
     if (ack) ack({ ok: true, roomId });
-    // 새로 들어온 사람도 맵을 받아야 하므로 방 전체에 전체 상태를 보낸다
-    broadcast(room, true);
+    // 새로 들어온 사람에게만 전체 상태를 주고, 방 전체에는 바뀐 부분(입장 소식)만 보낸다.
+    // 순서가 중요하다: 직전 스냅샷을 먼저 주고, 그 위에 얹을 패치를 뿌린다.
+    sendFull(socket, room);
+    broadcast(room);
+  });
+
+  // 패치 순서가 어긋난 클라이언트가 전체 상태를 다시 요청한다
+  socket.on('resync', () => {
+    const s = sessions.get(socket.id);
+    if (!s) return;
+    const room = rooms.get(s.roomId);
+    if (room) sendFull(socket, room);
   });
 
   function withRoom(handler) {
@@ -108,8 +157,7 @@ io.on('connection', (socket) => {
       const result = handler(room, s.playerId, payload || {}) || { ok: true };
       if (ack) ack(result);
       // 거부된 요청은 상태가 바뀌지 않았으므로 브로드캐스트하지 않는다.
-      // 사람의 행동은 드물게 일어나므로 맵까지 포함한 전체 상태를 보낸다.
-      if (result.ok) broadcast(room, true);
+      if (result.ok) broadcast(room);
     };
   }
 
@@ -242,7 +290,7 @@ io.on('connection', (socket) => {
       }
     }
     room.disconnect(socket.id);
-    broadcast(room, true);
+    broadcast(room);
   });
 });
 

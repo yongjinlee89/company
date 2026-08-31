@@ -9,7 +9,10 @@ const MAX_PLAYERS = 6;
 const BOT_NAMES = ['알파', '베타', '감마', '델타', '엡실론'];
 
 const TICK_MS = 250; // 시뮬레이션 간격
-const BROADCAST_EVERY = 2; // 몇 틱마다 화면을 갱신할지 (250ms × 2 = 0.5초)
+// 몇 틱마다 화면을 갱신할지 (250ms × 4 = 1초).
+// 무료 배포의 월 트래픽 한도 때문에 0.5초에서 늦췄다 — 사람의 행동에는
+// 어차피 즉시 브로드캐스트가 나가므로 체감 반응성은 그대로다.
+const BROADCAST_EVERY = 4;
 const BOT_THINK_MS = 1500; // 컴퓨터가 판단하는 주기 — 짧을수록 기회·위협에 더 빨리 반응한다
 
 const DEFAULT_SETTINGS = {
@@ -29,7 +32,7 @@ const SETTING_CHOICES = {
 class Room {
   /**
    * @param {string} id
-   * @param {(room: Room, full?: boolean) => void} onChange 상태가 바뀌면 호출 (브로드캐스트)
+   * @param {(room: Room) => void} onChange 상태가 바뀌면 호출 (브로드캐스트)
    */
   constructor(id, onChange) {
     this.id = id;
@@ -45,9 +48,9 @@ class Room {
     this._loop = null;
     this._ticks = 0;
     this._botClock = 0;
-    // 채팅/기록은 바뀌었을 때만 실어 보내려고 마지막으로 보낸 길이를 기억해 둔다
-    this._sentChatLen = -1;
-    this._sentLogLen = -1;
+    // 서버가 diff 브로드캐스트에 쓰는 "마지막으로 보낸 스냅샷" (server.js 가 관리)
+    this._snap = null;
+    this._seq = 0;
   }
 
   touch() {
@@ -266,10 +269,10 @@ class Room {
           console.error('[bot] 판단 중 오류', err);
         }
       }
-      // 맵이 바뀌었으니 전체 상태를 보낸다.
+      // 맵이 바뀌었으니 바로 알린다 (diff 라서 바뀐 타일만 나간다).
       // (touch() 는 하지 않는다 — 사람이 모두 나간 방은 그대로 정리 대상이어야 한다)
       if (mapChanged) {
-        this.onChange(this, true);
+        this.onChange(this);
         return;
       }
     }
@@ -278,7 +281,7 @@ class Room {
       this.phase = 'ended';
       this.stopLoop();
       this.touch();
-      this.onChange(this, true);
+      this.onChange(this);
       return;
     }
 
@@ -308,17 +311,16 @@ class Room {
   }
 
   /**
-   * 방 전체에 뿌릴 상태를 만든다.
+   * 방 전체에 뿌릴 상태를 만든다 — 항상 "완전한" 상태다.
    *
    * 이 게임에는 숨겨진 정보가 없으므로(달무티의 손패 같은 것) 모두가 같은 상태를 본다.
-   * 그래서 플레이어마다 따로 만들지 않고 한 번만 만들어 방에 통째로 보낸다.
-   * 자기 자신이 누구인지는 클라이언트가 이미 알고 있다.
+   * 그래서 플레이어마다 따로 만들지 않고 한 번만 만들어 방에 통째로 쓴다.
    *
-   * @param {boolean} full 맵·상수까지 모두 보낼지.
-   *   맵은 땅을 사거나 건물을 지을 때만 바뀌므로, 0.5초마다 도는 주기 갱신에서는 빼서
-   *   트래픽을 아낀다. 클라이언트는 직전에 받은 맵을 그대로 이어 쓴다.
+   * 예전에는 트래픽 때문에 맵·채팅·기록을 상황에 따라 빼고 보냈는데,
+   * 지금은 서버(server.js)가 직전 스냅샷과 비교해 바뀐 부분만 보내므로
+   * 여기서는 아무것도 뺄 필요가 없다 — 안 바뀐 건 어차피 안 나간다.
    */
-  state(full = true) {
+  state() {
     const base = {
       roomId: this.id,
       phase: this.phase,
@@ -335,18 +337,11 @@ class Room {
         voice: p.voice,
         muted: p.muted,
       })),
+      chat: this.chat.slice(-60),
     };
-    // 채팅·기록은 내용이 바뀌었을 때만 싣는다
-    if (full || this.chat.length !== this._sentChatLen) {
-      base.chat = this.chat.slice(-60);
-      this._sentChatLen = this.chat.length;
-    }
     if (this.game) {
-      base.game = this.game.publicState(full);
-      if (full || this.game.log.length !== this._sentLogLen) {
-        base.log = this.game.log.slice(-40);
-        this._sentLogLen = this.game.log.length;
-      }
+      base.game = this.game.publicState();
+      base.log = this.game.log.slice(-40);
     }
     return base;
   }

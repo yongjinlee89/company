@@ -59,33 +59,38 @@ function newRoom(onChange) {
   console.log('✓ 설정/시작');
 }
 
-/* ---------------- 상태 직렬화 (전체 / 주기 갱신) ---------------- */
+/* ---------------- 상태 직렬화 / diff 패치 ---------------- */
 {
+  const { diff, applyPatch } = require('../src/diff');
   const room = newRoom();
   room.join('a', '갑', 's1');
   room.join('b', '을', 's2');
   room.start('a');
 
-  const full = room.state(true);
-  assert.ok(full.game.map, '전체 상태에는 맵이 들어간다');
-  assert.ok(full.log, '전체 상태에는 기록이 들어간다');
+  const full = room.state();
+  assert.ok(full.game.map, '상태에는 맵이 들어간다');
+  assert.ok(full.log, '상태에는 기록이 들어간다');
   assert.ok(!('you' in full), '상태는 모두에게 동일하다 (개인화 필드 없음)');
 
-  const light = room.state(false);
-  assert.ok(!light.game.map, '주기 갱신에는 맵을 빼서 트래픽을 아낀다');
-  assert.ok(!light.log, '기록이 그대로면 다시 보내지 않는다');
-  assert.ok(light.game.players && light.roomPlayers, '실시간으로 바뀌는 값은 항상 보낸다');
-  assert.ok(
-    JSON.stringify(light).length * 2 < JSON.stringify(full).length,
-    '주기 갱신은 전체 상태의 절반 이하'
-  );
+  // 실제 전송은 서버가 직전 스냅샷과의 diff 만 보낸다
+  const snap1 = JSON.parse(JSON.stringify(room.state()));
+  const again = JSON.parse(JSON.stringify(room.state()));
+  assert.strictEqual(diff(snap1, again), undefined, '안 바뀌었으면 패치가 없다 (전송 생략)');
 
-  // 기록이 늘어나면 다시 실어 보낸다
+  room.game.tick(1);
   room.game.pushLog('테스트 사건');
-  assert.ok(room.state(false).log, '기록이 바뀌면 다시 보낸다');
-  assert.ok(!room.state(false).log, '보낸 뒤에는 또 보내지 않는다');
+  const snap2 = JSON.parse(JSON.stringify(room.state()));
+  const patch = diff(snap1, snap2);
+  assert.ok(patch, '바뀌면 패치가 생긴다');
+  assert.ok(
+    JSON.stringify(patch).length * 2 < JSON.stringify(snap2).length,
+    '패치는 전체 상태의 절반보다 훨씬 작다'
+  );
+  const rebuilt = JSON.parse(JSON.stringify(snap1));
+  applyPatch(rebuilt, patch);
+  assert.deepStrictEqual(rebuilt, snap2, '패치를 적용하면 새 상태와 정확히 같아진다');
   room.stopLoop();
-  console.log('✓ 상태 직렬화 (맵/기록 생략)');
+  console.log('✓ 상태 직렬화 / diff 패치');
 }
 
 /* ---------------- 컴퓨터 플레이어 추가/제거 ---------------- */
@@ -163,9 +168,9 @@ function newRoom(onChange) {
 
 /* ---------------- 시간이 다 되면 자동으로 끝난다 ---------------- */
 function runEndTest() {
-  let endBroadcast = null;
-  const room = newRoom((r, full) => {
-    if (r.phase === 'ended') endBroadcast = { full };
+  let endBroadcast = false;
+  const room = newRoom((r) => {
+    if (r.phase === 'ended') endBroadcast = true;
   });
   room.join('a', '갑', 's1');
   room.join('b', '을', 's2');
@@ -176,7 +181,7 @@ function runEndTest() {
     assert.strictEqual(room.phase, 'ended', '제한 시간이 지나면 방이 종료 상태가 된다');
     assert.ok(room.game.ended);
     assert.ok(room.game.ranking, '순위가 매겨진다');
-    assert.ok(endBroadcast && endBroadcast.full, '종료는 전체 상태로 알린다');
+    assert.ok(endBroadcast, '종료 순간 즉시 브로드캐스트한다');
     assert.strictEqual(room._loop, null, '끝나면 루프가 멈춘다');
     console.log('✓ 제한 시간 종료');
 
